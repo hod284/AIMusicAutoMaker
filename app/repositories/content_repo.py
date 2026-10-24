@@ -92,12 +92,16 @@ class SongRepository(BaseRepository):
             r = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
         return self._row(r) if r else None
 
-    def list(self, category_id: str | None = None, query: str = "", limit: int = 200) -> list[Song]:
+    def list(self, category_id: str | None = None, query: str = "", limit: int = 200, *,
+             title_only: bool = False) -> list[Song]:
         sql, args = "SELECT * FROM songs WHERE 1=1", []
         if category_id:
             sql += " AND category_id=?"
             args.append(category_id)
-        if query:
+        if query and title_only:
+            sql += " AND title LIKE ?"
+            args.append(f"%{query}%")
+        elif query:
             sql += " AND (title LIKE ? OR prompt LIKE ?)"
             args += [f"%{query}%", f"%{query}%"]
         sql += " ORDER BY created_at DESC LIMIT ?"

@@ -30,6 +30,7 @@ class CreateSongViewModel(BaseViewModel):
     music_models = ObservableProperty[list[ModelRecord]](factory=list)     # 필터된 음악 LoRA 목록
     music_model_id = ObservableProperty[str | None](None)                  # None = ACE 기본
     output_dir = ObservableProperty("")                                    # 결과 저장 폴더
+    song_title = ObservableProperty("")                                    # 곡 제목 (비우면 가사 제목)
 
     # --- 가사 ---
     drafts = ObservableProperty[list[LyricsDraft]](factory=list)
@@ -54,6 +55,9 @@ class CreateSongViewModel(BaseViewModel):
         self.listen(Topics.CATEGORY_CHANGED, lambda e: self.load_models())
         self.load_models()
         self.drafts = self.c.lyrics.list_recent()
+        # 다른 화면에 다녀와도 실행 중인 작사/음악 생성 작업을 다시 표시 (끝난 작업은 다시 불러오지 않음)
+        self.tracker.resume([JobKind.LYRICS_GENERATE, JobKind.PROMPT_GENERATE, JobKind.MUSIC_GENERATE],
+                            recent_minutes=0)
 
     # --- 조회 ---
     @property
@@ -154,7 +158,17 @@ class CreateSongViewModel(BaseViewModel):
         self.step = max(self.step, 2)
 
     # --- 2) 가사 편집 ---
+    def _auto_title(self) -> str:
+        """직접 쓴 가사는 제목 입력칸이 없으므로 첫 가사 줄([Verse] 같은 표시 제외)로 이름을 붙인다."""
+        for line in self.lyrics_text.splitlines():
+            text = line.strip()
+            if text and not (text.startswith("[") and text.endswith("]")):
+                return text[:30]
+        return "무제"
+
     def save_lyrics(self) -> None:
+        if not self.title.strip():
+            self.title = self._auto_title()
         if self.draft_id is None:
             draft = self.sync_command(lambda: self.c.lyrics.create_manual(
                 None, self.title or "무제", self.lyrics_text), success="가사를 저장했습니다.")
@@ -196,7 +210,7 @@ class CreateSongViewModel(BaseViewModel):
             return
         seed = options.get("seed")
         spec = {
-            "title": self.title, "draft_id": self.draft_id, "prompt": prompt,
+            "title": self.song_title.strip() or self.title, "draft_id": self.draft_id, "prompt": prompt,
             "vocal_language": "ko", "bpm": self.bpm,
             "use_lora": self.music_model_id is not None, "model_id": self.music_model_id,
             "output_dir": self.output_dir.strip(),

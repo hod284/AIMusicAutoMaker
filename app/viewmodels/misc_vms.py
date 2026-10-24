@@ -8,8 +8,9 @@ from typing import Any
 
 from app.adapters.ports import CapabilityReport
 from app.core.observer import DomainEvent, ObservableProperty, Topics
-from app.domain.entities import Category, Dataset, Job, JobEvent, Song
+from app.domain.entities import Dataset, Job, JobEvent, Song
 from app.domain.enums import JobKind, JobStatus
+from app.repositories.song_category_repo import SongCategory
 from app.services.diagnostics_service import DiagnosticsReport
 from app.services.training_service import (
     JsonlReport,
@@ -22,31 +23,116 @@ from app.viewmodels.base import BaseViewModel, JobTracker
 
 
 class LibraryViewModel(BaseViewModel):
+    """만든 곡 [곡 목록] 탭: 들어올 때는 항상 '전체', 카테고리를 고르면 그 카테고리 곡만. 곡 제목 검색."""
+
     songs = ObservableProperty[list[Song]](factory=list)
-    categories = ObservableProperty[list[Category]](factory=list)
-    category_filter = ObservableProperty[str | None](None)
+    categories = ObservableProperty[list[SongCategory]](factory=list)
+    category_filter = ObservableProperty("")        # "" = 전체
     query = ObservableProperty("")
+    membership = ObservableProperty[dict[str, list[str]]](factory=dict)
 
     def __init__(self, container=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(container)
-        self.categories = self.c.categories.list()
+        self.svc = self.c.song_categories
         self.listen(Topics.SONG_CREATED, lambda e: self.load())
         self.load()
 
     def load(self) -> None:
-        self.songs = self.c.music.list_songs(self.category_filter, self.query)
+        self.categories = self.svc.list()
+        if self.category_filter and self.category_filter not in {c.id for c in self.categories}:
+            self.category_filter = ""
+        self.membership = self.svc.membership()
+        self.songs = self.svc.list_songs(self.category_filter or None, self.query)
 
-    def set_filter(self, category_id: str | None = None, query: str | None = None) -> None:
-        if category_id is not None:
-            self.category_filter = category_id or None
-        if query is not None:
-            self.query = query
+    def set_filter(self, category_id: str | None) -> None:
+        self.category_filter = category_id or ""
         self.load()
 
-    def category_name(self, category_id: str | None) -> str:
-        if not category_id:
-            return "카테고리 없음"
-        return next((c.name for c in self.categories if c.id == category_id), category_id[:8])
+    def set_query(self, query: str | None) -> None:
+        self.query = query or ""
+        self.load()
+
+    def category_names(self, song_id: str) -> list[str]:
+        names = {c.id: c.name for c in self.categories}
+        return [names[c] for c in self.membership.get(song_id, []) if c in names]
+
+    def model_name(self, model_id: str | None) -> str:
+        if not model_id:
+            return "ACE 기본"
+        model = self.c.categories.models.get(model_id)
+        return model.label if model else "삭제된 모델"
+
+
+class SongCategoriesViewModel(BaseViewModel):
+    """만든 곡 [카테고리 편집] 탭: 카테고리 만들기/삭제, 곡 넣기/빼기, 곡 삭제."""
+
+    categories = ObservableProperty[list[SongCategory]](factory=list)
+    category_id = ObservableProperty[str | None](None)
+    members = ObservableProperty[list[Song]](factory=list)
+    all_songs = ObservableProperty[list[Song]](factory=list)
+    query = ObservableProperty("")
+
+    def __init__(self, container=None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(container)
+        self.svc = self.c.song_categories
+        self.listen(Topics.SONG_CREATED, lambda e: self.load())
+        self.load()
+
+    @property
+    def member_ids(self) -> set[str]:
+        return {s.id for s in self.members}
+
+    @property
+    def category_name(self) -> str:
+        return next((c.name for c in self.categories if c.id == self.category_id), "")
+
+    def load(self) -> None:
+        self.categories = self.svc.list()
+        if self.category_id not in {c.id for c in self.categories}:
+            self.category_id = self.categories[0].id if self.categories else None
+        self.members = self.svc.list_songs(self.category_id) if self.category_id else []
+        self.all_songs = self.svc.list_songs(None, self.query)
+
+    def select(self, category_id: str | None) -> None:
+        self.category_id = category_id
+        self.load()
+
+    def set_query(self, query: str | None) -> None:
+        self.query = query or ""
+        self.load()
+
+    def create(self, name: str) -> None:
+        cat = self.sync_command(lambda: self.svc.create(name), success=f"카테고리 '{name.strip()}' 를 만들었습니다.")
+        if cat:
+            self.category_id = cat.id
+            self.load()
+
+    def delete_category(self) -> None:
+        if not self.category_id:
+            return
+        name = self.category_name
+        self.sync_command(lambda: self.svc.delete(self.category_id))
+        if not self.error:
+            self.info = f"카테고리 '{name}' 를 삭제했습니다. (곡은 그대로 남습니다)"
+            self.category_id = None
+            self.load()
+
+    def add(self, song_id: str) -> None:
+        if not self.category_id:
+            self.error = "왼쪽에서 카테고리를 먼저 만들거나 고르세요."
+            return
+        self.sync_command(lambda: self.svc.add_song(self.category_id, song_id), success="카테고리에 넣었습니다.")
+
+    def remove(self, song_id: str) -> None:
+        if self.category_id:
+            self.sync_command(lambda: self.svc.remove_song(self.category_id, song_id),
+                              success="카테고리에서 뺐습니다. (곡은 그대로)")
+
+    def delete_song(self, song_id: str, delete_file: bool) -> None:
+        title = next((s.title for s in self.all_songs if s.id == song_id), "")
+        removed = self.sync_command(lambda: self.svc.delete_song(song_id, delete_file=delete_file))
+        if not self.error:
+            self.info = f"'{title}' 곡을 삭제했습니다." + (f" (파일도 삭제: {removed})" if removed else "")
 
 
 class JobsViewModel(BaseViewModel):
@@ -125,6 +211,9 @@ class TrainingViewModel(BaseViewModel):
         self.svc = self.c.lyrics_datasets
         self.tracker = JobTracker(self, self._on_job, self._on_log)
         self._reload_datasets(select_latest=True)
+        job = self.tracker.resume([JobKind.LYRICS_TRAIN])   # 다른 화면에 다녀와도 학습 진행 표시 유지
+        if job and job.dataset_id:
+            self.dataset_id = job.dataset_id
 
     # --- 조회 ---
     @property

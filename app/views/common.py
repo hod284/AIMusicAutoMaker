@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 NAV = [
     ("/", "대시보드", "dashboard"),
     ("/create", "곡 만들기", "music_note"),
-    ("/library", "곡 라이브러리", "library_music"),
+    ("/library", "만든 곡", "library_music"),
     ("/music-training", "음악 LoRA 학습", "graphic_eq"),
     ("/training", "가사 LoRA 학습", "model_training"),
     ("/jobs", "작업", "pending_actions"),

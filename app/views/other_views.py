@@ -5,7 +5,13 @@ from __future__ import annotations
 from nicegui import ui
 
 from app.adapters.ports import CapabilityState
-from app.viewmodels.misc_vms import JobsViewModel, LibraryViewModel, SettingsViewModel, TrainingViewModel
+from app.viewmodels.misc_vms import (
+    JobsViewModel,
+    LibraryViewModel,
+    SettingsViewModel,
+    SongCategoriesViewModel,
+    TrainingViewModel,
+)
 from app.viewmodels.models_vm import LyricsModelsViewModel
 from app.views.common import ViewScope, folder_picker, page_frame, progress_text, section, status_badge
 from app.views.models_tab import models_tab
@@ -16,38 +22,176 @@ _CAP_COLOR = {CapabilityState.AVAILABLE: "positive", CapabilityState.MOCK: "warn
 
 @ui.page("/library")
 def library_page() -> None:
-    vm = LibraryViewModel()
-    scope = ViewScope(vm)
-    with page_frame("곡 라이브러리"):
-        with ui.row().classes("items-end gap-3"):
-            options = {"": "전체"} | {c.id: c.name for c in vm.categories}
-            ui.select(options, value="", label="카테고리", on_change=lambda e: vm.set_filter(category_id=e.value or "")).classes("w-60")
-            ui.input("검색 (제목/프롬프트)", on_change=lambda e: vm.set_filter(query=e.value or "")).classes("w-72")
+    with page_frame("만든 곡"):
+        with ui.tabs().classes("w-full") as tabs:
+            t_list = ui.tab("곡 목록", icon="queue_music")
+            t_edit = ui.tab("카테고리 편집", icon="folder_special")
+        # 들어올 때는 항상 [곡 목록] + 카테고리 '전체'
+        with ui.tab_panels(tabs, value=t_list).classes("w-full bg-transparent"):
+            with ui.tab_panel(t_list).classes("p-0 gap-3"):
+                _song_list_tab(LibraryViewModel())
+            with ui.tab_panel(t_edit).classes("p-0"):
+                _song_category_tab(SongCategoriesViewModel())
 
-        @ui.refreshable
-        def listing() -> None:
-            if not vm.songs:
-                ui.label("곡이 없습니다.").classes("text-gray-500")
+
+def _song_list_tab(vm: LibraryViewModel) -> None:
+    scope = ViewScope(vm)
+
+    @ui.refreshable
+    def filters() -> None:
+        with ui.row().classes("items-end gap-3"):
+            options = {"": "전체"} | {c.id: f"{c.name} ({c.song_count})" for c in vm.categories}
+            ui.select(options, label="카테고리", value=vm.category_filter,
+                      on_change=lambda e: vm.set_filter(e.value)).classes("w-60")
+
+    with ui.row().classes("items-end gap-3"):
+        filters()
+        search = ui.input(placeholder="곡 제목 검색", on_change=lambda e: vm.set_query(e.value)) \
+            .props("dense outlined clearable").classes("w-96")
+        with search.add_slot("prepend"):
+            ui.icon("search")
+    scope.refresh_on(filters, "categories", "category_filter")
+
+    @ui.refreshable
+    def listing() -> None:
+        ui.label(f"{len(vm.songs)}곡").classes("text-xs text-gray-500")
+        if not vm.songs:
+            ui.label("곡이 없습니다." if not (vm.query or vm.category_filter) else "조건에 맞는 곡이 없습니다.") \
+                .classes("text-gray-500")
+            return
+        with ui.column().classes("w-full gap-0 border rounded"):
             for song in vm.songs:
                 g = song.generation
-                with ui.card().classes("w-full"):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.label(song.title).classes("font-bold")
-                        ui.badge(vm.category_name(song.category_id))
-                        if g.get("is_mock"):
-                            ui.badge("MOCK", color="warning")
-                        ui.label(song.created_at.strftime("%Y-%m-%d %H:%M")).classes("text-xs text-gray-500")
-                    ui.audio(f"/media/songs/{song.id}").classes("w-full")
-                    with ui.expansion("가사 · 프롬프트 · 모델 · Seed").classes("w-full"):
-                        ui.label(f"프롬프트: {song.prompt}").classes("text-sm")
-                        lora = g.get("lora", {})
-                        ui.label(f"음악 LoRA: {lora.get('adapter_path') or '기본 모델'} ({lora.get('load_status', '-')})").classes("text-xs")
-                        ui.label(f"Seed: {g.get('seed', '-')} · DiT: {g.get('dit_model', '-')} · task: {g.get('task_id', '-')}").classes("text-xs")
-                        ui.markdown(f"```\n{g.get('lyrics', '')}\n```")
-                    ui.link("다운로드", f"/media/songs/{song.id}?download=1")
+                with ui.row().classes("w-full items-center gap-3 px-3 py-2 border-b no-wrap hover:bg-gray-50"):
+                    with ui.column().classes("gap-0 w-64 shrink-0 min-w-0"):
+                        ui.label(song.title or "무제").classes("font-bold ellipsis")
+                        ui.label(f"{song.created_at.strftime('%Y-%m-%d %H:%M')} · seed {g.get('seed', '-')}") \
+                            .classes("text-xs text-gray-500")
+                        with ui.row().classes("gap-1"):
+                            for name in vm.category_names(song.id):
+                                ui.badge(name, color="primary").props("outline")
+                    ui.badge(vm.model_name(song.music_model_id), color="grey").classes("shrink-0")
+                    if g.get("is_mock"):
+                        ui.badge("MOCK", color="warning")
+                    ui.audio(f"/media/songs/{song.id}").props("preload=none").classes("flex-1 min-w-[240px]")
+                    ui.button(icon="download", on_click=lambda s=song: ui.navigate.to(
+                        f"/media/songs/{s.id}?download=1", new_tab=True)).props("flat dense round").tooltip("다운로드")
+                    ui.button(icon="info", on_click=lambda s=song: _song_detail(vm, s)) \
+                        .props("flat dense round").tooltip("가사 · 프롬프트 · 파일 위치")
 
-        listing()
-        scope.refresh_on(listing, "songs")
+    listing()
+    scope.refresh_on(listing, "songs", "membership", "categories")
+
+
+def _song_category_tab(vm: SongCategoriesViewModel) -> None:
+    scope = ViewScope(vm)
+    with ui.row().classes("w-full gap-4 items-start no-wrap"):
+        # --- 왼쪽: 카테고리와 그 안의 곡 ---
+        with ui.card().classes("w-[440px] shrink-0"):
+            ui.label("카테고리").classes("font-bold")
+            new_cat = {"name": ""}
+            with ui.row().classes("w-full items-end gap-2"):
+                ui.input("새 카테고리 이름").bind_value(new_cat, "name").props("maxlength=40").classes("flex-1")
+                ui.button("만들기", icon="add",
+                          on_click=lambda: (vm.create(new_cat["name"]), new_cat.update(name=""))).props("outline dense")
+
+            @ui.refreshable
+            def category_panel() -> None:
+                if not vm.categories:
+                    ui.label("카테고리가 없습니다. 위에서 만드세요.").classes("text-xs text-gray-500")
+                    return
+                with ui.row().classes("w-full items-end gap-2 no-wrap"):
+                    ui.select({c.id: f"{c.name} ({c.song_count})" for c in vm.categories}, label="편집할 카테고리",
+                              value=vm.category_id, on_change=lambda e: vm.select(e.value)).classes("flex-1")
+                    ui.button(icon="delete", on_click=lambda: _confirm_delete_song_category(vm)) \
+                        .props("flat round color=negative").tooltip("카테고리 삭제 (곡은 남음)")
+                ui.label(f"이 카테고리의 곡 {len(vm.members)}개").classes("text-sm font-bold mt-2")
+                with ui.column().classes("w-full gap-1 max-h-[60vh] overflow-y-auto"):
+                    if not vm.members:
+                        ui.label("오른쪽 목록에서 [넣기]로 곡을 추가하세요.").classes("text-xs text-gray-500")
+                    for song in vm.members:
+                        with ui.row().classes("w-full items-center gap-2 no-wrap border rounded px-2 py-1"):
+                            ui.label(song.title or "무제").classes("flex-1 ellipsis")
+                            ui.button(icon="remove_circle_outline", on_click=lambda s=song: vm.remove(s.id)) \
+                                .props("flat dense round color=negative").tooltip("카테고리에서 빼기")
+
+            category_panel()
+            scope.refresh_on(category_panel, "categories", "category_id", "members")
+
+        # --- 오른쪽: 전체 곡 ---
+        with ui.card().classes("flex-1 min-w-0"):
+            ui.label("만든 곡 전체").classes("font-bold")
+            search = ui.input(placeholder="곡 제목 검색", on_change=lambda e: vm.set_query(e.value)) \
+                .props("dense outlined clearable").classes("w-full")
+            with search.add_slot("prepend"):
+                ui.icon("search")
+
+            @ui.refreshable
+            def song_list() -> None:
+                ui.label(f"{len(vm.all_songs)}곡").classes("text-xs text-gray-500")
+                with ui.column().classes("w-full gap-1 max-h-[65vh] overflow-y-auto"):
+                    if not vm.all_songs:
+                        ui.label("곡이 없습니다.").classes("text-xs text-gray-500")
+                    for song in vm.all_songs:
+                        inside = song.id in vm.member_ids
+                        with ui.row().classes("w-full items-center gap-2 no-wrap border rounded px-2 py-1"):
+                            with ui.column().classes("gap-0 flex-1 min-w-0"):
+                                ui.label(song.title or "무제").classes("font-bold ellipsis")
+                                ui.label(song.created_at.strftime("%Y-%m-%d %H:%M")).classes("text-xs text-gray-500")
+                            if inside:
+                                ui.button("빼기", icon="remove", on_click=lambda s=song: vm.remove(s.id)) \
+                                    .props("outline dense color=negative")
+                            else:
+                                ui.button("넣기", icon="add", on_click=lambda s=song: vm.add(s.id)) \
+                                    .props("dense color=primary")
+                            ui.button(icon="delete_forever", on_click=lambda s=song: _confirm_delete_song(vm, s)) \
+                                .props("flat dense round color=negative").tooltip("곡 삭제")
+
+            song_list()
+            scope.refresh_on(song_list, "all_songs", "members")
+
+
+def _confirm_delete_song_category(vm: SongCategoriesViewModel) -> None:
+    name = vm.category_name
+    if not name:
+        return
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"'{name}' 카테고리를 삭제할까요?").classes("font-bold")
+        ui.label("카테고리 묶음만 없어지고, 안에 있던 곡은 그대로 남습니다.").classes("text-sm")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("취소", on_click=dialog.close).props("flat")
+            ui.button("삭제", on_click=lambda: (vm.delete_category(), dialog.close())).props("color=negative")
+    dialog.open()
+
+
+def _confirm_delete_song(vm: SongCategoriesViewModel, song) -> None:  # type: ignore[no-untyped-def]
+    opt = {"file": True}
+    with ui.dialog() as dialog, ui.card().classes("w-[560px] max-w-full"):
+        ui.label(f"'{song.title or '무제'}' 곡을 삭제할까요?").classes("font-bold")
+        ui.label("목록과 모든 카테고리에서 지웁니다.").classes("text-sm")
+        if song.audio_path:
+            ui.checkbox("오디오 파일도 실제로 삭제 (휴지통 아님, 되돌릴 수 없음)").bind_value(opt, "file")
+            ui.label(song.audio_path).classes("text-xs font-mono break-all bg-red-50 rounded p-2 w-full")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("취소", on_click=dialog.close).props("flat")
+            ui.button("삭제", icon="delete_forever",
+                      on_click=lambda: (vm.delete_song(song.id, opt["file"]), dialog.close())).props("color=negative")
+    dialog.open()
+
+
+def _song_detail(vm: LibraryViewModel, song) -> None:  # type: ignore[no-untyped-def]
+    g = song.generation
+    with ui.dialog() as dialog, ui.card().classes("w-[640px] max-w-full"):
+        ui.label(song.title or "무제").classes("text-lg font-bold")
+        cats = vm.category_names(song.id)
+        if cats:
+            ui.label("카테고리: " + ", ".join(cats)).classes("text-sm")
+        ui.label(f"파일: {song.audio_path}").classes("text-xs font-mono break-all")
+        ui.label(f"음악 모델: {vm.model_name(song.music_model_id)} · Seed: {g.get('seed', '-')}").classes("text-sm")
+        ui.label(f"프롬프트: {song.prompt or '(없음)'}").classes("text-sm")
+        ui.code(g.get("lyrics", "") or "(가사 없음)", language="text").classes("w-full max-h-[50vh] overflow-y-auto")
+        ui.button("닫기", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 @ui.page("/jobs")

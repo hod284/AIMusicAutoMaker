@@ -46,6 +46,10 @@ class MusicTrainingViewModel(BaseViewModel):
         self.tracker = JobTracker(self, self._on_job, self._on_log)
         self._reload_staged()
         self._reload_datasets(select_latest=True)
+        # 다른 화면에 다녀와도 실행 중인 단계(라벨링·전처리·학습)의 진행 표시를 다시 붙인다
+        job = self.tracker.resume(STEP_NAME)
+        if job and job.dataset_id:
+            self.select_dataset(job.dataset_id)
 
     # --- 조회 ---
     @property

@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, TypeVar
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 from app.core.container import ServiceContainer
 from app.core.errors import StudioError
@@ -88,6 +89,31 @@ class JobTracker:
     def track(self, job: Job) -> None:
         self.job_id = job.id
         self._on_update(job)
+
+    def resume(self, kinds: Iterable[Any], *, recent_minutes: int = 10) -> Job | None:
+        """화면에 다시 들어왔을 때 이어 붙이기.
+
+        작업은 화면과 상관없이 서버(앱)에서 계속 돈다. 화면을 나갔다 오면 새 ViewModel 이 만들어져
+        진행 표시가 사라져 보이므로, 실행 중인(또는 방금 끝난) 같은 종류의 작업을 찾아 로그를 다시 채우고 추적한다.
+        """
+        kinds = set(kinds)
+        repo = self.vm.c.job_repo
+        job = next((j for j in reversed(repo.list_active()) if j.kind in kinds), None)
+        if job is None:
+            last = next((j for j in repo.list_recent(30) if j.kind in kinds), None)
+            ended = last.ended_at if last else None
+            if ended is not None:
+                now = datetime.now(ended.tzinfo) if ended.tzinfo else datetime.now()
+                if now - ended <= timedelta(minutes=recent_minutes):
+                    job = last
+        if job is None:
+            return None
+        if self._on_log:
+            for ev in repo.events(job.id, limit=300):
+                if ev.level != "debug":
+                    self._on_log(f"[{ev.level}] {ev.message}")
+        self.track(job)
+        return job
 
     def _handle_update(self, event: DomainEvent) -> None:
         job: Job = event.payload["job"]

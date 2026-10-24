@@ -216,8 +216,9 @@ class MusicService:
         """학습 등으로 서버 LoRA 상태가 바뀌었을 수 있을 때 호출 → 다음 생성 때 다시 맞춘다."""
         self._believed_adapter = _UNKNOWN
 
-    def list_songs(self, category_id: str | None = None, query: str = "") -> list[Song]:
-        return self.songs.list(category_id, query)
+    def list_songs(self, category_id: str | None = None, query: str = "", *, title_only: bool = False,
+                   limit: int = 1000) -> list[Song]:
+        return self.songs.list(category_id, query, limit, title_only=title_only)
 
 
 _UNKNOWN = object()

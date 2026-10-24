@@ -87,7 +87,8 @@ def create_song_page() -> None:
             with ui.column().classes("flex-1 min-w-0 gap-4"):
                 # --- ② 가사 편집 ---
                 with section("② 가사 편집", "직접 쓰거나 고치세요. 저장하면 새 버전으로 남고 이전 버전도 보존됩니다."):
-                    ui.input("제목").bind_value(vm, "title").classes("w-full")
+                    ui.label().bind_text_from(vm, "title", backward=lambda t: f"제목: {t}" if t else "제목: -") \
+                        .classes("text-sm text-gray-600")
                     ui.textarea("가사", placeholder="[Verse 1]\n...\n[Chorus]\n...").bind_value(vm, "lyrics_text") \
                         .props("autogrow outlined").classes("w-full font-mono")
                     ui.button("가사 저장", icon="save", on_click=vm.save_lyrics)
@@ -133,6 +134,8 @@ def create_song_page() -> None:
                     scope.refresh_on(music_model_picker, "categories", "music_filter", "music_models",
                                      "music_model_id", "lyrics_model_id")
 
+                    ui.input("곡 제목", placeholder="비우면 ② 의 가사 제목을 씁니다").bind_value(vm, "song_title") \
+                        .props("maxlength=80").classes("w-full")
                     with ui.row().classes("w-full items-end gap-2 no-wrap"):
                         ui.input("결과 저장 폴더", placeholder="비우면 studio/workspace/library/songs") \
                             .bind_value(vm, "output_dir").classes("flex-1")
