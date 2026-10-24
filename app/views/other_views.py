@@ -6,7 +6,9 @@ from nicegui import ui
 
 from app.adapters.ports import CapabilityState
 from app.viewmodels.misc_vms import JobsViewModel, LibraryViewModel, SettingsViewModel, TrainingViewModel
-from app.views.common import ViewScope, page_frame, progress_text, section, status_badge
+from app.viewmodels.models_vm import LyricsModelsViewModel
+from app.views.common import ViewScope, folder_picker, page_frame, progress_text, section, status_badge
+from app.views.models_tab import models_tab
 
 _CAP_COLOR = {CapabilityState.AVAILABLE: "positive", CapabilityState.MOCK: "warning",
               CapabilityState.MISSING: "negative", CapabilityState.UNBOUND: "grey", CapabilityState.UNKNOWN: "grey"}
@@ -94,11 +96,81 @@ async def training_page() -> None:
     vm = TrainingViewModel()
     scope = ViewScope(vm)
     with page_frame("가사 LoRA 학습"):
-        ui.select({c.id: c.name for c in vm.categories}, label="카테고리", value=vm.category_id,
-                  on_change=lambda e: vm.select(e.value)).classes("w-72")
+        with ui.tabs().classes("w-full") as tabs:
+            t_train = ui.tab("학습", icon="model_training")
+            t_models = ui.tab("모델 · 카테고리", icon="folder_special")
+        with ui.tab_panels(tabs, value=t_train).classes("w-full bg-transparent"):
+            with ui.tab_panel(t_train).classes("p-0 gap-4"):
+                _lyrics_train_tab(vm, scope)
+            with ui.tab_panel(t_models).classes("p-0"):
+                models_tab(LyricsModelsViewModel())
 
-        with section("가사 LoRA 데이터셋 (MLX-LM chat JSONL)",
-                     '한 줄에 {"messages":[{"role":"user",...},{"role":"assistant",...}]}. 권리가 확인된 가사만 사용하세요.'):
+
+def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
+    # --- 결과 이름 / 저장 폴더 ---
+    with ui.row().classes("w-full items-center gap-4"):
+        ui.input("결과 모델 이름 *", placeholder="예: 감성 발라드 작사 v1").bind_value(vm, "model_title").props(
+            "maxlength=80 counter").classes("w-80")
+        ui.input("결과 저장 폴더", placeholder="비우면 studio/workspace/library/lyrics/adapters") \
+            .bind_value(vm, "export_dir").classes("flex-1 min-w-[280px]")
+        ui.button("찾아보기", icon="folder_open", on_click=lambda: folder_picker(
+            vm.browse, vm.browse_root, vm, "export_dir", title="결과 저장 폴더 선택",
+            start=vm.export_dir or None)).props("outline")
+    ui.label("결과는 '결과 저장 폴더/결과 모델 이름' 폴더에 저장됩니다. 같은 이름 폴더가 있으면 덮어쓰지 않고 멈춥니다.") \
+        .classes("text-xs text-gray-500")
+
+    # --- ① 데이터셋 ---
+    with section("① 데이터셋 만들기 — 가사 .txt 올리기",
+                 "가사 1곡 = .txt 파일 1개. 여러 개를 한 번에 올릴 수 있습니다. 권리가 확인된 가사만 사용하세요."):
+        ui.label("파일 안에는 가사만 적으면 됩니다. [Verse 1], [Chorus] 같은 구조 표시를 넣으면 더 좋습니다. "
+                 "맨 위에 '제목: …', '주제: …', '분위기: …' 줄을 넣으면 그대로 쓰고, 없으면 파일 이름을 제목/주제로 씁니다.") \
+            .classes("text-xs text-gray-500")
+
+        async def on_txt(e) -> None:  # type: ignore[no-untyped-def]
+            vm.add_txt(e.file.name, await e.file.read())
+
+        uploader = ui.upload(label="가사 .txt 올리기 (여러 개 선택 가능)", multiple=True, auto_upload=True,
+                             on_upload=on_txt, max_file_size=200_000).props("accept=.txt").classes("w-full")
+
+        @ui.refreshable
+        def txt_list() -> None:
+            files = vm.txt_files
+            with ui.row().classes("items-center gap-3"):
+                ui.label(f"올린 가사 {len(files)}곡").classes("text-sm font-bold")
+                if files:
+                    ui.button("모두 빼기", on_click=lambda: (vm.clear_txt(), uploader.reset())) \
+                        .props("flat dense color=negative size=sm")
+            with ui.column().classes("w-full gap-1 max-h-72 overflow-y-auto"):
+                for name, text in files:
+                    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+                    with ui.row().classes("w-full items-center gap-2 no-wrap border rounded px-2 py-1"):
+                        ui.icon("description", color="grey")
+                        ui.label(name).classes("font-mono text-sm w-56 ellipsis")
+                        ui.label(first[:60]).classes("text-xs text-gray-500 flex-1 ellipsis")
+                        ui.button(icon="visibility", on_click=lambda n=name: _show_preview(vm, n)) \
+                            .props("flat dense round").tooltip("학습 예제로 어떻게 바뀌는지 보기")
+                        ui.button(icon="close", on_click=lambda n=name: vm.remove_txt(n)) \
+                            .props("flat dense round color=negative")
+            ui.button("이 가사들로 데이터셋 버전 만들기", icon="create_new_folder", on_click=vm.build_from_txt) \
+                .set_enabled(len(files) >= 2)
+
+        txt_list()
+        scope.refresh_on(txt_list, "txt_files")
+
+        @ui.refreshable
+        def report() -> None:
+            r = vm.jsonl_report
+            if r:
+                color = "text-negative" if r.errors else "text-positive"
+                ui.label(f"전체 {r.total} · 유효 {r.valid} · 중복 {r.duplicates} · 오류 {len(r.errors)}").classes(
+                    f"text-sm font-bold {color}")
+                for msg in r.errors[:10] + r.warnings:
+                    ui.label(msg).classes("text-xs text-orange-700")
+
+        report()
+        scope.refresh_on(report, "jsonl_report")
+
+        with ui.expansion("고급: JSONL 로 직접 만들기", icon="code").classes("w-full"):
             text = {"value": ""}
 
             async def on_upload(e) -> None:  # type: ignore[no-untyped-def]
@@ -106,66 +178,99 @@ async def training_page() -> None:
                 vm.preview_jsonl(text["value"])
 
             ui.upload(label="JSONL 업로드", on_upload=on_upload, auto_upload=True, max_file_size=20_000_000).props(
-                "accept=.jsonl")
-            ui.textarea("또는 붙여넣기").bind_value(text, "value").classes("w-full font-mono")
-            with ui.row():
-                ui.button("검증", on_click=lambda: vm.preview_jsonl(text["value"])).props("outline")
-                ui.button("데이터셋 버전 만들기 (train/valid)", on_click=lambda: vm.build_dataset(text["value"]))
+                "accept=.jsonl").classes("w-full")
+            ui.textarea("또는 붙여넣기 (한 줄에 {\"messages\":[user, assistant]})").bind_value(text, "value") \
+                .props("outlined").classes("w-full font-mono text-xs")
+            with ui.row().classes("gap-2"):
+                ui.button("검증", icon="fact_check", on_click=lambda: vm.preview_jsonl(text["value"])).props("outline")
+                ui.button("JSONL 로 데이터셋 버전 만들기", on_click=lambda: vm.build_dataset(text["value"])) \
+                    .props("outline")
 
-            @ui.refreshable
-            def report() -> None:
-                r = vm.jsonl_report
-                if r:
-                    ui.label(f"전체 {r.total} · 유효 {r.valid} · 중복 {r.duplicates} · 오류 {len(r.errors)}")
-                    for msg in r.errors[:10] + r.warnings:
-                        ui.label(msg).classes("text-xs text-orange-700")
+    # --- ② 학습 ---
+    with section("② 학습 (mlx_lm.lora)", "비운 값은 mlx_lm 기본값을 씁니다. 학습 중에는 가사 생성이 잠시 멈출 수 있습니다."):
+        @ui.refreshable
+        def dataset_picker() -> None:
+            if not vm.datasets:
+                ui.label("데이터셋이 없습니다. ① 에서 먼저 만드세요.").classes("text-sm text-gray-500")
+                return
+            options = {d.id: f"{vm.dataset_label(d)} · {vm.dataset_counts(d)} · {d.created_at.strftime('%m-%d %H:%M')}"
+                       for d in reversed(vm.datasets)}
+            ui.select(options, label="데이터셋 *", value=vm.dataset_id,
+                      on_change=lambda e: vm.select_dataset(e.value)).classes("w-full")
+            if vm.dataset:
+                ui.label(vm.dataset.source_path).classes("text-xs text-gray-400 break-all")
 
-            report()
-            scope.refresh_on(report, "jsonl_report")
+        dataset_picker()
+        scope.refresh_on(dataset_picker, "datasets", "dataset_id")
 
-        with section("가사 LoRA 학습", "mlx_lm.lora --help 로 확인된 옵션만 전달합니다. 결과는 새 버전 폴더에 저장됩니다."):
-            cfg = {"dataset_id": None, "iters": 100, "batch_size": 1, "learning_rate": None}
+        form = {"iters": 200, "batch_size": 1, "learning_rate": None, "num_layers": None,
+                "max_seq_length": None, "save_every": None}
+        with ui.row().classes("items-end gap-3"):
+            ui.number("반복 횟수 (iters)", min=1).bind_value(form, "iters").classes("w-36")
+            ui.number("batch size", min=1).bind_value(form, "batch_size").classes("w-28")
+            ui.number("learning rate", format="%.6f", placeholder="기본").bind_value(form, "learning_rate") \
+                .classes("w-36")
+            ui.number("LoRA 레이어 수", min=1, placeholder="기본").bind_value(form, "num_layers").classes("w-32")
+            ui.number("최대 길이 (토큰)", min=128, placeholder="기본").bind_value(form, "max_seq_length") \
+                .classes("w-36")
+            ui.number("저장 주기 (iter)", min=1, placeholder="기본").bind_value(form, "save_every").classes("w-32")
 
-            @ui.refreshable
-            def train_form() -> None:
-                ui.select({d.id: f"v{d.version} ({d.source_path})" for d in vm.datasets}, label="데이터셋").bind_value(
-                    cfg, "dataset_id").classes("w-full")
+        @ui.refreshable
+        def buttons() -> None:
+            with ui.row().classes("items-center gap-2"):
+                start = ui.button("학습 시작", icon="play_arrow", on_click=lambda: vm.start_training(form))
+                start.set_enabled(not vm.training)
+                if vm.training:
+                    ui.button("중지", icon="stop", on_click=vm.cancel).props("outline color=negative")
 
-            train_form()
-            scope.refresh_on(train_form, "datasets")
-            with ui.row().classes("items-end gap-3"):
-                ui.number("iters", min=1).bind_value(cfg, "iters").classes("w-28")
-                ui.number("batch size", min=1).bind_value(cfg, "batch_size").classes("w-28")
-                ui.number("learning rate (빈칸=기본)", format="%.6f").bind_value(cfg, "learning_rate").classes("w-48")
-                ui.button("학습 시작", icon="play_arrow", on_click=lambda: cfg["dataset_id"] and vm.start_lyrics_training(
-                    cfg["dataset_id"], int(cfg["iters"]), int(cfg["batch_size"]), cfg["learning_rate"]))
-                ui.button("중지", icon="stop", on_click=vm.cancel).props("outline color=negative")
-                ui.button("CLI 옵션 확인 (--help)", on_click=vm.load_train_options).props("flat")
-            opts = ui.label("").classes("text-xs text-gray-500")
-            scope.on("train_options", lambda v: opts.set_text("지원 옵션: " + " ".join(v)))
+        buttons()
+        scope.refresh_on(buttons, "job")
 
-            @ui.refreshable
-            def train_status() -> None:
-                if vm.job:
-                    with ui.row().classes("items-center gap-2"):
-                        status_badge(vm.job.status)
-                        ui.label(progress_text(vm.job.progress))
-                if vm.losses:
-                    ui.echart({
-                        "xAxis": {"type": "value", "name": "iter"}, "yAxis": {"type": "value", "name": "loss"},
-                        "series": [{"type": "line", "data": [list(p) for p in vm.losses], "showSymbol": False}],
-                        "tooltip": {"trigger": "axis"},
-                    }).classes("w-full h-56")
-                if vm.job_logs:
-                    log = ui.log(max_lines=300).classes("w-full h-40 text-xs")
-                    log.push("\n".join(vm.job_logs[-60:]))
+        @ui.refreshable
+        def train_status() -> None:
+            job = vm.job
+            if job is None:
+                return
+            with ui.card().classes("w-full bg-gray-50"):
+                with ui.row().classes("items-center gap-3 w-full"):
+                    status_badge(job.status)
+                    if not job.status.is_terminal:
+                        ui.spinner(size="sm")
+                    ui.label(progress_text(job.progress)).classes("text-sm")
+                    if vm.losses:
+                        ui.label(f"iter {vm.losses[-1][0]} · train loss {vm.losses[-1][1]:.3f}").classes("text-sm")
+                    if vm.val_losses:
+                        ui.label(f"val loss {vm.val_losses[-1][1]:.3f}").classes("text-sm text-gray-600")
+                if job.progress is not None:
+                    ui.linear_progress(value=job.progress, show_value=False).classes("w-full")
+                if job.error:
+                    ui.label(job.error).classes("text-sm text-negative break-all")
+            if vm.losses or vm.val_losses:
+                ui.echart({
+                    "legend": {"data": ["train", "val"]},
+                    "xAxis": {"type": "value", "name": "iter"}, "yAxis": {"type": "value", "name": "loss"},
+                    "series": [
+                        {"name": "train", "type": "line", "data": [list(p) for p in vm.losses], "showSymbol": False},
+                        {"name": "val", "type": "line", "data": [list(p) for p in vm.val_losses]},
+                    ],
+                    "tooltip": {"trigger": "axis"},
+                }).classes("w-full h-56")
+            if vm.job_logs:
+                log = ui.log(max_lines=300).classes("w-full h-40 text-xs")
+                log.push("\n".join(vm.job_logs[-80:]))
 
-            train_status()
-            scope.refresh_on(train_status, "job", "losses", "job_logs")
+        train_status()
+        scope.refresh_on(train_status, "job", "losses", "val_losses", "job_logs")
 
-        with ui.card().classes("w-full"):
-            ui.label("음악 LoRA 학습은 별도 화면에서 합니다.").classes("text-sm")
-            ui.link("음악 LoRA 학습으로 이동 →", "/music-training")
+
+def _show_preview(vm: TrainingViewModel, filename: str) -> None:
+    with ui.dialog() as dialog, ui.card().classes("w-[640px] max-w-full"):
+        ui.label(f"{filename} → 학습 예제").classes("font-bold")
+        ui.label("[요청] 은 곡 만들기 화면이 보내는 형식, [정답 가사] 는 모델이 배울 결과입니다.").classes(
+            "text-xs text-gray-500")
+        ui.code(vm.preview_txt(filename), language="text").classes("w-full max-h-[60vh] overflow-y-auto")
+        ui.button("닫기", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 @ui.page("/settings")

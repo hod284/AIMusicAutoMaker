@@ -43,12 +43,15 @@ def create_song_page() -> None:
 
                 @ui.refreshable
                 def lyrics_model_picker() -> None:
+                    cats = {"": "전체"} | {c.id: c.name for c in vm.categories}
+                    ui.select(cats, label="가사 모델 카테고리", value=vm.lyrics_filter,
+                              on_change=lambda e: vm.set_lyrics_filter(e.value)).classes("w-full")
                     options = {"": "Qwen 기본 (LoRA 없음)"} | {m.id: m.label for m in vm.lyrics_models}
                     ui.select(options, label="가사 모델 (LLM)", value=vm.lyrics_model_id or "",
                               on_change=lambda e: vm.set_lyrics_model(e.value)).classes("w-full")
 
                 lyrics_model_picker()
-                scope.refresh_on(lyrics_model_picker, "lyrics_models", "lyrics_model_id")
+                scope.refresh_on(lyrics_model_picker, "categories", "lyrics_filter", "lyrics_models", "lyrics_model_id")
 
                 form = {"topic": "", "speaker": "", "mood": "", "viewpoint": "", "forbidden": "", "variants": 1,
                         "syllable_min": 7, "syllable_max": 12,

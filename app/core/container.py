@@ -77,7 +77,8 @@ class ServiceContainer(metaclass=SingletonMeta):
                                   poll_interval_s=s.ace_poll_interval_s, poll_timeout_s=s.ace_poll_timeout_s,
                                   bus=self.bus)
         self.diagnostics = DiagnosticsService(s, self.music_engine, self.lyrics_engine)
-        self.lyrics_datasets = LyricsDatasetBuilder(self.categories, self.dataset_repo)
+        self.lyrics_datasets = LyricsDatasetBuilder(self.categories, self.dataset_repo,
+                                                    s.workspace_dir / "library" / "lyrics")
         self.music_datasets = MusicDatasetService(
             self.music_engine, self.categories, self.dataset_repo, self.guard, s.ace_studio_share_dir, self.lock,
             max_upload_mb=s.max_upload_mb,
@@ -90,7 +91,7 @@ class ServiceContainer(metaclass=SingletonMeta):
             PromptGenerateHandler(self.director, self.categories, self.lyrics),
             MusicGenerateHandler(self.music),
             FullSongHandler(self.lyrics, self.director, self.music),
-            LyricsTrainHandler(self.lyrics_engine, self.categories, self.dataset_repo, s.qwen_base_model),
+            LyricsTrainHandler(self.lyrics_engine, self.lyrics_datasets, s.qwen_base_model),
             MusicScanHandler(self.music_datasets),
             MusicLabelHandler(self.music_datasets),
             MusicPreprocessHandler(self.music_datasets),

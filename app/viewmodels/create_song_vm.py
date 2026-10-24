@@ -22,7 +22,8 @@ ALL = ""   # '전체' 카테고리 필터 값
 
 class CreateSongViewModel(BaseViewModel):
     # --- 모델 선택 ---
-    lyrics_models = ObservableProperty[list[ModelRecord]](factory=list)   # 가사 LoRA 목록
+    lyrics_filter = ObservableProperty(ALL)                                # 가사 모델 카테고리 필터
+    lyrics_models = ObservableProperty[list[ModelRecord]](factory=list)   # 필터된 가사 LoRA 목록
     lyrics_model_id = ObservableProperty[str | None](None)                # None = Qwen 기본
     categories = ObservableProperty[list[Category]](factory=list)          # 음악 모델 분류
     music_filter = ObservableProperty(ALL)                                 # 음악 모델 카테고리 필터
@@ -77,13 +78,24 @@ class CreateSongViewModel(BaseViewModel):
 
     # --- 모델 선택 ---
     def load_models(self) -> None:
-        self.lyrics_models = self.c.categories.list_models(engine=Engine.QWEN)
-        if self.lyrics_model_id not in {m.id for m in self.lyrics_models}:
-            self.lyrics_model_id = None
         self.categories = self.c.categories.list()
-        if self.music_filter and self.music_filter not in {c.id for c in self.categories}:
+        ids = {c.id for c in self.categories}
+        if self.music_filter and self.music_filter not in ids:
             self.music_filter = ALL
+        if self.lyrics_filter and self.lyrics_filter not in ids:
+            self.lyrics_filter = ALL
+        self._load_lyrics_models()
         self._load_music_models()
+
+    def _load_lyrics_models(self) -> None:
+        if self.lyrics_filter:
+            self.lyrics_models = self.c.categories.category_models(self.lyrics_filter, Engine.QWEN)
+        else:
+            self.lyrics_models = self.c.categories.list_models(engine=Engine.QWEN)
+        if self.lyrics_model_id not in {m.id for m in self.lyrics_models}:
+            active = (self.c.categories.active_model(self.lyrics_filter, Engine.QWEN)
+                      if self.lyrics_filter else None)
+            self.lyrics_model_id = active.id if active else None
 
     def _load_music_models(self) -> None:
         if self.music_filter:
@@ -95,6 +107,10 @@ class CreateSongViewModel(BaseViewModel):
             active = (self.c.categories.active_model(self.music_filter, Engine.ACE)
                       if self.music_filter else None)
             self.music_model_id = active.id if active else None
+
+    def set_lyrics_filter(self, category_id: str | None) -> None:
+        self.lyrics_filter = category_id or ALL
+        self._load_lyrics_models()
 
     def set_lyrics_model(self, model_id: str | None) -> None:
         self.lyrics_model_id = model_id or None
