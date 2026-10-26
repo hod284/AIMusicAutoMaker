@@ -22,6 +22,7 @@ from app.domain.entities import Dataset
 from app.domain.enums import DatasetKind, Engine, JobKind, JobStatus
 from app.repositories.content_repo import DatasetRepository
 from app.services.category_service import CategoryService, validate_adapter_dir
+from app.services.lyrics_service import lyrics_system, prompt_labels, write_in_line
 from app.services.job_service import JobContext, JobHandler
 from app.utils.fileio import atomic_write_text
 from app.utils.path_guard import safe_filename
@@ -52,8 +53,33 @@ def validate_chat_record(obj: Any) -> str | None:
 
 # --- 가사 .txt → 학습 예제 변환 ---
 _MARKER_RE = re.compile(r"^\s*\[([^\]\n]{1,40})\]\s*$")
-_HEADER_KEYS = ("주제", "화자", "분위기", "시점", "구조")
-TXT_TAIL = "한국어로 작성. 후렴(Chorus)은 반복될 때 같은 가사를 유지."
+# .txt 맨 위 머리말 이름 (한국어·영어·일본어 모두 인식) → 공통 키
+_HEADER_KEYS = {
+    "제목": "title", "title": "title", "タイトル": "title",
+    "주제": "topic", "topic": "topic", "テーマ": "topic",
+    "화자": "speaker", "narrator": "speaker", "語り手": "speaker",
+    "분위기": "mood", "mood": "mood", "雰囲気": "mood",
+    "시점": "viewpoint", "point of view": "viewpoint", "視点": "viewpoint",
+    "구조": "structure", "structure": "structure", "構成": "structure",
+}
+_TITLE_LINE = {"ko": "제목", "ko_en": "제목", "en": "Title", "ja": "タイトル"}
+TXT_TAIL = write_in_line("ko")
+_HANGUL_RE = re.compile("[\uAC00-\uD7AF]")
+_KANA_RE = re.compile("[\u3040-\u30FF]")
+_LATIN_RE = re.compile("[A-Za-z]")
+
+
+def detect_language(text: str) -> str:
+    """가사에 가장 많이 쓰인 글자로 언어를 고른다: 한글 → ko, 가나 → ja, 그 외 영문 → en."""
+    body = "\n".join(ln for ln in text.splitlines() if not _MARKER_RE.match(ln))
+    hangul, kana, latin = (len(r.findall(body)) for r in (_HANGUL_RE, _KANA_RE, _LATIN_RE))
+    # 한글·가나는 1글자=1음절, 영문은 단어 하나가 여러 글자 → 영문 글자 수는 4로 나눠 비교
+    if hangul >= max(kana, 1) and hangul * 4 >= latin:
+        # 한글이 주인데 영어 단어도 꽤 섞였으면(영어 단어 ≈ 영문 글자/4 가 한글 글자의 15% 이상) K-pop 스타일
+        return "ko_en" if latin / 4 >= hangul * 0.15 else "ko"
+    if kana > hangul and kana * 4 >= latin:
+        return "ja"
+    return "en" if latin else "ko"
 
 
 def decode_text(data: bytes) -> str:
@@ -75,18 +101,18 @@ def txt_to_record(filename: str, text: str) -> dict[str, Any]:
     요청(user) 형식은 곡 만들기 화면이 실제로 보내는 형식과 같다 → 학습한 모델이 그 요청을 잘 따른다.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")
-    title = ""
     header: dict[str, str] = {}
     body: list[str] = []
     in_header = True
     for line in lines:
         stripped = line.strip()
-        key, sep, value = stripped.partition(":")
-        if sep and key.strip() == "제목" and not title:
-            title = value.strip()
+        key, sep, value = stripped.replace("：", ":").partition(":")
+        canon = _HEADER_KEYS.get(key.strip().lower()) if sep else None
+        if canon == "title" and "title" not in header:
+            header["title"] = value.strip()
             continue
-        if in_header and sep and key.strip() in _HEADER_KEYS:
-            header[key.strip()] = value.strip()
+        if in_header and canon:
+            header[canon] = value.strip()
             continue
         if in_header and not stripped:
             continue
@@ -95,19 +121,22 @@ def txt_to_record(filename: str, text: str) -> dict[str, Any]:
     lyrics = "\n".join(body).strip()
     if not lyrics:
         raise ValidationError(f"{filename}: 가사가 비어 있습니다.")
-    title = title or Path(filename).stem.strip() or "무제"
+    title = header.get("title") or Path(filename).stem.strip() or "무제"
+    lang = detect_language(lyrics)                 # 팝송(영어)·일본어 가사면 그 언어의 지시·형식으로 학습
+    L = prompt_labels(lang)
     markers = [m.group(1).strip() for ln in body if (m := _MARKER_RE.match(ln))]
-    user = [f"주제: {header.get('주제') or title}"]
-    for key in ("화자", "분위기", "시점"):
+    user = [f"{L['topic']}: {header.get('topic') or title}"]
+    for key in ("speaker", "mood", "viewpoint"):
         if header.get(key):
-            user.append(f"{key}: {header[key]}")
-    structure = header.get("구조") or ", ".join(markers)
+            user.append(f"{L[key]}: {header[key]}")
+    structure = header.get("structure") or ", ".join(markers)
     if structure:
-        user.append(f"구조: {structure}")
-    user.append(TXT_TAIL)
+        user.append(f"{L['structure']}: {structure}")
+    user.append(write_in_line(lang))
     return {"messages": [
+        {"role": "system", "content": lyrics_system(lang)},   # 생성할 때와 똑같은 system 지시로 학습
         {"role": "user", "content": "\n".join(user)},
-        {"role": "assistant", "content": f"제목: {title}\n{lyrics}"},
+        {"role": "assistant", "content": f"{_TITLE_LINE[lang]}: {title}\n{lyrics}"},
     ]}
 
 
@@ -190,6 +219,10 @@ class LyricsDatasetBuilder:
 
     def build(self, jsonl_text: str, valid_ratio: float = 0.1, seed: int = 42) -> tuple[Dataset, JsonlReport]:
         records, report = self.parse_jsonl(jsonl_text)
+        for rec in records:   # system 이 없는 예제에는 생성 때 쓰는 system 지시를 넣어 학습/생성 조건을 맞춘다
+            if not any(m.get("role") == "system" for m in rec["messages"]):
+                answer = next((m["content"] for m in rec["messages"] if m.get("role") == "assistant"), "")
+                rec["messages"].insert(0, {"role": "system", "content": lyrics_system(detect_language(answer))})
         if report.errors:
             raise ValidationError("JSONL 검증 실패", detail=report.errors[:20])
         if len(records) < 2:

@@ -278,8 +278,8 @@ class TrainingViewModel(BaseViewModel):
 
     def preview_txt(self, filename: str) -> str:
         text = next((t for n, t in self.txt_files if n == filename), "")
-        rec = txt_to_record(filename, text)
-        return f"[요청]\n{rec['messages'][0]['content']}\n\n[정답 가사]\n{rec['messages'][1]['content']}"
+        msgs = {m["role"]: m["content"] for m in txt_to_record(filename, text)["messages"]}
+        return f"[요청]\n{msgs.get('user', '')}\n\n[정답 가사]\n{msgs.get('assistant', '')}"
 
     def build_from_txt(self) -> None:
         if len(self.txt_files) < 2:

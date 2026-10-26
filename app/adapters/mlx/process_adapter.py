@@ -160,6 +160,9 @@ class MlxProcessAdapter(LyricsEnginePort):
             "top_p": req.top_p,
             "seed": req.seed,
             "enable_thinking": req.enable_thinking,
+            "lock_language": req.lock_language,
+            "sections": req.sections,
+            "title_label": req.title_label,
         }
         started = time.monotonic()
         code, out, err = await self._run([str(WORKER_SCRIPT)], stdin=json.dumps(payload).encode("utf-8"))

@@ -14,6 +14,7 @@ from typing import Any
 from app.core.observer import ObservableProperty, Topics
 from app.domain.entities import Category, Job, LyricsDraft, ModelRecord, Song
 from app.domain.enums import Engine, JobKind, JobStatus
+from app.services.lyrics_service import LYRICS_LANGUAGES, VOCAL_LANGUAGE
 from app.services.prompt_service import MusicPrompt, free_category
 from app.viewmodels.base import BaseViewModel, JobTracker
 
@@ -21,6 +22,8 @@ ALL = ""   # '전체' 카테고리 필터 값
 
 
 class CreateSongViewModel(BaseViewModel):
+    LANGUAGES = LYRICS_LANGUAGES   # {"ko": "한국어", "en": "영어", "ja": "일본어"}
+
     # --- 모델 선택 ---
     lyrics_filter = ObservableProperty(ALL)                                # 가사 모델 카테고리 필터
     lyrics_models = ObservableProperty[list[ModelRecord]](factory=list)   # 필터된 가사 LoRA 목록
@@ -30,6 +33,7 @@ class CreateSongViewModel(BaseViewModel):
     music_models = ObservableProperty[list[ModelRecord]](factory=list)     # 필터된 음악 LoRA 목록
     music_model_id = ObservableProperty[str | None](None)                  # None = ACE 기본
     output_dir = ObservableProperty("")                                    # 결과 저장 폴더
+    language = ObservableProperty("ko")                                    # 가사 언어 = 노래(보컬) 언어
     song_title = ObservableProperty("")                                    # 곡 제목 (비우면 가사 제목)
 
     # --- 가사 ---
@@ -137,7 +141,7 @@ class CreateSongViewModel(BaseViewModel):
     # --- 1) 작사 ---
     async def generate_lyrics(self, form: dict[str, Any]) -> None:
         params = {
-            "model_id": self.lyrics_model_id, "topic": form.get("topic", "").strip(),
+            "model_id": self.lyrics_model_id, "topic": form.get("topic", "").strip(), "language": self.language,
             "speaker": form.get("speaker", ""), "mood": form.get("mood", ""), "viewpoint": form.get("viewpoint", ""),
             "forbidden": [t.strip() for t in form.get("forbidden", "").split(",") if t.strip()],
             "variants": int(form.get("variants") or 1),
@@ -211,7 +215,7 @@ class CreateSongViewModel(BaseViewModel):
         seed = options.get("seed")
         spec = {
             "title": self.song_title.strip() or self.title, "draft_id": self.draft_id, "prompt": prompt,
-            "vocal_language": "ko", "bpm": self.bpm,
+            "vocal_language": VOCAL_LANGUAGE.get(self.language, "ko"), "bpm": self.bpm,
             "use_lora": self.music_model_id is not None, "model_id": self.music_model_id,
             "output_dir": self.output_dir.strip(),
             "audio_duration": float(options["duration"]) if options.get("duration") else None,

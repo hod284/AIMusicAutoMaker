@@ -167,6 +167,9 @@ class LLMRequest(BaseModel):
     top_p: float = Field(default=0.95, gt=0.0, le=1.0)
     seed: int | None = None
     enable_thinking: bool = False
+    sections: list[str] | None = None  # 가사 구조. 주면 워커가 [구간] 마다 몇 줄씩만 쓰게 해 형식을 보장한다
+    title_label: str = "제목"          # 첫 줄 제목 머리말 (언어별)
+    lock_language: str | None = None   # "ko"/"en"/"ja": 그 언어에 안 맞는 문자(다른 나라 글자) 토큰을 생성 단계에서 막는다
 
 
 class LLMResult(BaseModel):

@@ -108,7 +108,7 @@ def clean_llm_lyrics(text: str) -> tuple[str, str]:
     first_section = next((i for i, ln in enumerate(lines) if SECTION_RE.match(ln.strip())), None)
     if first_section is not None:
         for ln in lines[:first_section]:
-            m = re.match(r"^\s*(?:제목|title)\s*[:：]\s*(.+)$", ln.strip(), re.IGNORECASE)
+            m = re.match(r"^\s*(?:제목|title|タイトル)\s*[:：]\s*(.+)$", ln.strip(), re.IGNORECASE)
             if m:
                 title = m.group(1).strip().strip('"「」')
         lines = lines[first_section:]

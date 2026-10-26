@@ -531,6 +531,8 @@ class MusicPreprocessHandler(_MusicStepHandler):
 class MusicTrainHandler(_MusicStepHandler):
     kind = JobKind.MUSIC_TRAIN
 
+    MAX_STATUS_ERRORS = 60   # 5초 간격 × 60 = 약 5분 동안 계속 실패하면 발산으로 보고 멈춘다
+
     def __init__(self, svc: MusicDatasetService, music: MusicService, poll_s: float = 5.0) -> None:
         super().__init__(svc)
         self.music = music
@@ -573,10 +575,31 @@ class MusicTrainHandler(_MusicStepHandler):
             ctx.log(f"학습 시작: epochs={cfg.train_epochs}, 출력={output_dir}")
             await self.svc.invoke_ready(ctx, "training_start", payload)
             seen_running = False
+            status_errors = 0
             try:
                 while True:
                     ctx.check_cancelled()
-                    st = summarize_status(await self.svc.engine.invoke("training_status"))
+                    try:
+                        raw_status = await self.svc.engine.invoke("training_status")
+                    except Exception as exc:  # noqa: BLE001
+                        # ACE 서버는 loss 가 NaN 이면 상태 JSON 을 못 만들어 500 을 돌려준다
+                        # (ValueError: Out of range float values are not JSON compliant: nan).
+                        # 한두 번은 학습 초반/순간적인 값일 수 있으므로 바로 멈추지 않고 계속 확인한다.
+                        status_errors += 1
+                        if status_errors == 1 or status_errors % 6 == 0:
+                            ctx.log(f"ACE 학습 상태 응답 오류 {status_errors}회 (loss 가 NaN 일 때 생김). "
+                                    f"학습은 멈추지 않고 계속 확인합니다.", "warning")
+                        if status_errors >= self.MAX_STATUS_ERRORS:
+                            raise EngineResponseError(
+                                "ACE 학습 상태를 계속 읽을 수 없습니다. loss 가 NaN 으로 발산했을 가능성이 큽니다 — "
+                                "learning rate 를 낮추거나(예: 1e-4 → 5e-5) 데이터를 확인한 뒤 다시 학습하세요.",
+                                detail=str(exc)[:500]) from exc
+                        await asyncio.sleep(self.poll_s)
+                        continue
+                    if status_errors:
+                        ctx.log(f"ACE 학습 상태 응답 복구 (오류 {status_errors}회 후)")
+                        status_errors = 0
+                    st = summarize_status(raw_status)
                     if st.running:
                         seen_running = True
                     if st.progress is not None:

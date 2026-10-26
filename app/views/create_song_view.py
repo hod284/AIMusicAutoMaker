@@ -50,6 +50,8 @@ def create_song_page() -> None:
                     ui.select(options, label="가사 모델 (LLM)", value=vm.lyrics_model_id or "",
                               on_change=lambda e: vm.set_lyrics_model(e.value)).classes("w-full")
 
+                ui.select(vm.LANGUAGES, label="가사 언어 (노래 언어)").bind_value(vm, "language") \
+                    .classes("w-full").tooltip("AI 작사 언어이자 ACE-Step 에 보내는 보컬 언어입니다.")
                 lyrics_model_picker()
                 scope.refresh_on(lyrics_model_picker, "categories", "lyrics_filter", "lyrics_models", "lyrics_model_id")
 
