@@ -59,7 +59,7 @@ def _song_list_tab(vm: LibraryViewModel) -> None:
             ui.label("곡이 없습니다." if not (vm.query or vm.category_filter) else "조건에 맞는 곡이 없습니다.") \
                 .classes("text-gray-500")
             return
-        with ui.column().classes("w-full gap-0 border rounded"):
+        with ui.column().classes("w-full gap-0 border rounded max-h-[70vh] overflow-y-auto"):
             for song in vm.songs:
                 g = song.generation
                 with ui.row().classes("w-full items-center gap-3 px-3 py-2 border-b no-wrap hover:bg-gray-50"):

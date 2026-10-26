@@ -17,7 +17,9 @@ from app.core.singleton import SingletonMeta
 from app.db.database import Database
 from app.repositories.category_repo import CategoryRepository
 from app.repositories.content_repo import DatasetRepository, LyricsRepository, SongRepository
+from app.repositories.lyric_category_repo import LyricCategoryRepository
 from app.repositories.song_category_repo import SongCategoryRepository
+from app.services.lyrics_book_service import LyricsBookService
 from app.services.song_category_service import SongCategoryService
 from app.repositories.job_repo import JobRepository
 from app.repositories.model_repo import ModelRepository
@@ -78,6 +80,7 @@ class ServiceContainer(metaclass=SingletonMeta):
         self.music = MusicService(self.music_engine, self.song_repo, self.categories, self.lyrics, self.lock,
                                   poll_interval_s=s.ace_poll_interval_s, poll_timeout_s=s.ace_poll_timeout_s,
                                   bus=self.bus)
+        self.lyrics_book = LyricsBookService(self.lyrics_repo, LyricCategoryRepository(self.db), self.bus)
         self.song_categories = SongCategoryService(SongCategoryRepository(self.db), self.song_repo, self.bus)
         self.diagnostics = DiagnosticsService(s, self.music_engine, self.lyrics_engine)
         self.lyrics_datasets = LyricsDatasetBuilder(self.categories, self.dataset_repo,

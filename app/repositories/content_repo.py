@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from app.domain.entities import Dataset, LyricsDraft, Song
+from app.domain.entities import Dataset, LyricsDraft, Song, utcnow
 from app.domain.enums import DatasetKind, LyricsSource
 from app.repositories.base import BaseRepository, dumps, iso, loads, parse_dt
 
@@ -15,15 +15,16 @@ class LyricsRepository(BaseRepository):
             id=r["id"], category_id=r["category_id"], lineage_id=r["lineage_id"], title=r["title"],
             topic=r["topic"], lyrics=r["lyrics"], version=r["version"], source=LyricsSource(r["source"]),
             model_id=r["model_id"], prompt=loads(r["prompt_json"], {}), created_at=parse_dt(r["created_at"]),
+            updated_at=parse_dt(r["updated_at"]) if "updated_at" in r.keys() else None,
         )
 
     def add(self, d: LyricsDraft) -> LyricsDraft:
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO lyrics_drafts (id, category_id, lineage_id, title, topic, lyrics, version, source,"
-                " model_id, prompt_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " model_id, prompt_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (d.id, d.category_id, d.lineage_id, d.title, d.topic, d.lyrics, d.version, d.source.value,
-                 d.model_id, dumps(d.prompt), iso(d.created_at)),
+                 d.model_id, dumps(d.prompt), iso(d.created_at), iso(d.updated_at or d.created_at)),
             )
         return d
 
@@ -50,6 +51,49 @@ class LyricsRepository(BaseRepository):
         with self.db.read() as conn:
             return [self._row(r) for r in conn.execute(
                 "SELECT * FROM lyrics_drafts ORDER BY created_at DESC LIMIT ?", (limit,))]
+
+    # 묶음(lineage)마다 최신 버전 하나 = 가사 한 개
+    _LATEST_WHERE = ("d.version = (SELECT MAX(version) FROM lyrics_drafts x WHERE x.lineage_id = d.lineage_id)")
+
+    def _latest_sql(self, query: str, category_id: str | None) -> tuple[str, list[object]]:
+        sql = "FROM lyrics_drafts d"
+        args: list[object] = []
+        if category_id:
+            sql += " JOIN lyric_category_members m ON m.lyric_id = d.id AND m.category_id = ?"
+            args.append(category_id)
+        sql += f" WHERE {self._LATEST_WHERE}"
+        if query.strip():
+            q = f"%{query.strip()}%"
+            sql += " AND (d.title LIKE ? OR d.topic LIKE ? OR d.lyrics LIKE ?)"
+            args += [q, q, q]
+        return sql, args
+
+    def list_latest(self, query: str = "", limit: int = 50, category_id: str | None = None) -> list[LyricsDraft]:
+        """가사 목록 (최근 저장 순). 제목·주제·가사 내용 검색, 가사 카테고리로 거르기."""
+        sql, args = self._latest_sql(query, category_id)
+        with self.db.read() as conn:
+            return [self._row(r) for r in conn.execute(
+                f"SELECT d.* {sql} ORDER BY COALESCE(d.updated_at, d.created_at) DESC LIMIT ?",  # noqa: S608
+                (*args, limit))]
+
+    def count_latest(self, query: str = "", category_id: str | None = None) -> int:
+        sql, args = self._latest_sql(query, category_id)
+        with self.db.read() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) {sql}", args).fetchone()[0])  # noqa: S608
+
+    def update_content(self, draft_id: str, title: str, lyrics: str) -> None:
+        """덮어쓰기 저장 (버전을 새로 만들지 않는다)."""
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE lyrics_drafts SET title=?, lyrics=?, updated_at=? WHERE id=?",
+                         (title, lyrics, iso(utcnow()), draft_id))
+
+    def delete_lineage(self, lineage_id: str) -> int:
+        """가사 삭제 (예전 버전 기록까지). 이 가사로 만든 곡은 남기고 연결만 끊는다."""
+        ids = "(SELECT id FROM lyrics_drafts WHERE lineage_id=?)"
+        with self.db.transaction() as conn:
+            conn.execute(f"UPDATE songs SET lyrics_draft_id=NULL WHERE lyrics_draft_id IN {ids}", (lineage_id,))  # noqa: S608
+            conn.execute(f"DELETE FROM lyric_category_members WHERE lyric_id IN {ids}", (lineage_id,))  # noqa: S608
+            return conn.execute("DELETE FROM lyrics_drafts WHERE lineage_id=?", (lineage_id,)).rowcount
 
     def list_for_category(self, category_id: str, limit: int = 100) -> list[LyricsDraft]:
         with self.db.read() as conn:

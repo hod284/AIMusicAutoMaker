@@ -182,6 +182,7 @@ class LyricsDraft(BaseModel):
     model_id: str | None = None      # None = Qwen 기본 모델
     prompt: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime | None = None   # 가사집에서 마지막으로 저장(덮어쓰기)한 시각
 
 
 class Song(BaseModel):

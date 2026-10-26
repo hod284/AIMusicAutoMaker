@@ -365,12 +365,37 @@ class MusicDatasetService:
         """
         if not force and self._dit_ready and (self._llm_ready or not need_llm):
             return
+        # ACE 의 /v1/init 은 이미 올라가 있어도 무조건 다시 로드한다 → 메모리 두 배로 'MPS out of memory'.
+        # 그래서 먼저 ACE 에 실제로 올라가 있는지 물어보고, 음악 모델(DiT)이 있으면 다시 올리지 않는다.
+        # (분석용 LM 은 라벨링 요청 때 ACE 가 필요하면 스스로 올리고, 안 올라가 있다고 하면 그때 force 로 재시도)
+        if not force:
+            state = await self.ace_model_state()
+            if state is not None and state[0]:
+                self._dit_ready = True
+                self._llm_ready = self._llm_ready or state[1]
+                ctx.log("ACE 모델이 이미 메모리에 있습니다 — 다시 로드하지 않습니다."
+                        + ("" if state[1] or not need_llm else " (분석용 LM 은 필요할 때 올립니다)"))
+                return
         ctx.log("ACE 모델 로드 중 (/v1/init" + (", 분석용 LM 포함" if need_llm else "")
                 + ") — 처음에는 수 분 걸릴 수 있습니다")
         init = await self.engine.invoke("init_model", {"init_llm": need_llm}, timeout=self.init_timeout_s)
         self._dit_ready = True
         self._llm_ready = self._llm_ready or need_llm
         ctx.log(f"ACE 모델 로드 완료 — ACE 응답: {_short(init)}", details={"raw": init})
+
+    async def ace_model_state(self) -> tuple[bool, bool] | None:
+        """(음악 모델 로드됨, 분석용 LM 로드됨). 확인할 수 없으면 None."""
+        try:
+            data = await self.engine.invoke("models")
+        except Exception:  # noqa: BLE001 - 확인 실패는 '모름' 으로 처리
+            return None
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if not isinstance(data, dict) or "models" not in data:
+            return None
+        dit = any(isinstance(m, dict) and m.get("is_loaded") for m in data.get("models") or [])
+        llm = bool(data.get("llm_initialized") or data.get("loaded_lm_model"))
+        return dit, llm
 
     async def invoke_ready(self, ctx: JobContext, capability: str, payload: dict[str, Any] | None = None, *,
                            need_llm: bool = False) -> Any:
@@ -450,7 +475,8 @@ class MusicScanHandler(_MusicStepHandler):
             "audio_dir": str(audio_dir),
             "dataset_name": f"{(ds.category_id or 'lib')[:8]}_v{ds.version:03d}",
             "custom_tag": ctx.params.get("custom_tag") or None,
-            "tag_position": ctx.params.get("tag_position") or None,
+            # ACE 기본값은 'replace' (캡션을 태그로 통째로 바꿈) → 캡션을 살리고 태그를 앞에 붙이는 'prepend' 로
+            "tag_position": ctx.params.get("tag_position") or ("prepend" if ctx.params.get("custom_tag") else None),
             "all_instrumental": bool(ctx.params.get("all_instrumental", False)),
         }
         async with self.svc.lock.music_engine():

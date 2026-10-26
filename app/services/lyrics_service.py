@@ -171,24 +171,18 @@ class LyricsService:
         return drafts
 
     def save_edit(self, draft_id: str, lyrics: str, title: str | None = None) -> LyricsDraft:
-        """수정본을 새 버전으로 저장. 원본은 보존된다."""
+        """덮어쓰기 저장 (가사 하나 = 기록 하나, 버전을 새로 만들지 않는다)."""
         base = self.repo.get(draft_id)
         if base is None:
             raise NotFoundError("가사를 찾을 수 없습니다.", detail=draft_id)
         if not lyrics.strip():
             raise ValidationError("가사가 비어 있습니다.")
-        if lyrics.strip() == base.lyrics.strip() and (title is None or title == base.title):
-            return base
-        new = LyricsDraft(
-            category_id=base.category_id, lineage_id=base.lineage_id, title=title if title is not None else base.title,
-            topic=base.topic, lyrics=lyrics.strip(), version=self.repo.latest_version(base.lineage_id) + 1,
-            source=base.source,  # 출처 구분은 유지하고 수동 수정 여부는 prompt 메타로 기록
-            model_id=base.model_id, prompt={**base.prompt, "edited_from": base.id},
-        )
-        new.prompt["manually_edited"] = True
-        self.repo.add(new)
-        self.bus.publish(Topics.LYRICS_SAVED, draft=new)
-        return new
+        new_title = base.title if title is None else (title.strip() or base.title)
+        if lyrics.strip() != base.lyrics.strip() or new_title != base.title:
+            self.repo.update_content(base.id, new_title, lyrics.strip())
+            base = self.repo.get(base.id)  # type: ignore[assignment]
+            self.bus.publish(Topics.LYRICS_SAVED, draft=base)
+        return base  # type: ignore[return-value]
 
     def create_manual(self, category_id: str | None, title: str, lyrics: str, topic: str = "") -> LyricsDraft:
         if category_id:
@@ -212,6 +206,10 @@ class LyricsService:
 
     def list_recent(self, limit: int = 50) -> list[LyricsDraft]:
         return self.repo.list_recent(limit)
+
+    def list_latest(self, query: str = "", limit: int = 50) -> tuple[list[LyricsDraft], int]:
+        """(가사 목록, 검색 결과 전체 개수)"""
+        return self.repo.list_latest(query, limit), self.repo.count_latest(query)
 
     def list_for_category(self, category_id: str) -> list[LyricsDraft]:
         return self.repo.list_for_category(category_id)

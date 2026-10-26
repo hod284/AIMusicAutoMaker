@@ -21,6 +21,7 @@ from app.core.logging_setup import setup_logging
 from app.views import (  # noqa: F401
     create_song_view,
     dashboard_view,
+    lyrics_book_view,
     music_training_view,
     other_views,
 )

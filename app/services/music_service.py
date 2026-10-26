@@ -91,7 +91,7 @@ class MusicService:
                 info["load_status"] = "already_off"
                 return info
             if caps.is_usable("lora_unload"):
-                status = await self.engine.unload_lora()
+                status = await self._unload(log_fn)
                 self._believed_adapter = None
                 info["load_status"] = "unloaded"
                 info["status"] = status.model_dump(mode="json")
@@ -117,7 +117,7 @@ class MusicService:
                 info["status"] = current.model_dump(mode="json")
                 return info
         if self._believed_adapter not in (None, _UNKNOWN) and caps.is_usable("lora_unload"):
-            await self.engine.unload_lora()
+            await self._unload(log_fn)
             log_fn("기존 LoRA 언로드")
         status: LoraStatus = await self.engine.load_lora(Path(target))
         if status.loaded is False:
@@ -211,6 +211,18 @@ class MusicService:
             if path == protected or protected in path.parents:
                 raise ValidationError("기존 ACE 자산 폴더에는 저장할 수 없습니다.", detail=str(path))
         return path
+
+    async def _unload(self, log_fn: LogFn) -> LoraStatus:
+        """LoRA 언로드. ACE 가 기본 모델로 되돌릴 수 없는 상태면 이유와 해결 방법을 알려 준다."""
+        try:
+            return await self.engine.unload_lora()
+        except EngineResponseError as exc:
+            if "backup not found" in str(exc.detail).lower():
+                raise EngineResponseError(
+                    "ACE 서버가 기본 모델로 되돌릴 수 없는 상태입니다 (학습용 LoRA 가 모델에 남아 있음). "
+                    "ACE 패치(STUDIO_PATCHES.md)를 적용한 뒤 ACE 서버를 한 번 껐다 켜면 다시 생기지 않습니다.",
+                    detail=exc.detail) from exc
+            raise
 
     def invalidate_lora_state(self) -> None:
         """학습 등으로 서버 LoRA 상태가 바뀌었을 수 있을 때 호출 → 다음 생성 때 다시 맞춘다."""
