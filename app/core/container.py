@@ -53,6 +53,7 @@ class ServiceContainer(metaclass=SingletonMeta):
         s.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.bus = EventBus()
+        self.seen_results: set[str] = set()   # 화면에서 이미 보여 준 음악 생성 결과 (작업 id)
         self.db = Database(s.db_path)
         self.lock = ResourceLock(s.gpu_heavy_concurrency)
         self.guard = PathGuard(

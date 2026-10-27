@@ -64,4 +64,5 @@ if __name__ in {"__main__", "__mp_main__"}:
         reload=False,                   # 워커/잡 상태 보존을 위해 자동 리로드 끔
         show=False,
         favicon="🎵",
+        reconnect_timeout=600,          # 창을 내리거나 다른 탭에 있다가 와도 10분 동안은 같은 화면을 유지
     )

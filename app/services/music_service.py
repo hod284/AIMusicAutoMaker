@@ -94,7 +94,7 @@ class MusicService:
                 status = await self._unload(log_fn)
                 self._believed_adapter = None
                 info["load_status"] = "unloaded"
-                info["status"] = status.model_dump(mode="json")
+                info["status"] = status.model_dump(mode="json") if status else {"note": "model not loaded yet"}
                 log_fn("LoRA 언로드 → 기본 모델로 생성")
             else:
                 info["load_status"] = "off_unverified"
@@ -111,7 +111,10 @@ class MusicService:
                 detail=caps.capabilities.get("lora_load").reason if caps.capabilities.get("lora_load") else None,
             )
         if self._believed_adapter == target:
-            current = await self.engine.lora_status()
+            try:
+                current = await self.engine.lora_status()
+            except EngineResponseError:      # ACE 가 재시작돼 모델이 없으면 상태 조회도 실패 → 새로 올림
+                current = LoraStatus(loaded=False)
             if current.adapter_path in (None, target) and current.loaded is not False:
                 info["load_status"] = "already_loaded"
                 info["status"] = current.model_dump(mode="json")
@@ -119,7 +122,16 @@ class MusicService:
         if self._believed_adapter not in (None, _UNKNOWN) and caps.is_usable("lora_unload"):
             await self._unload(log_fn)
             log_fn("기존 LoRA 언로드")
-        status: LoraStatus = await self.engine.load_lora(Path(target))
+        await self._ensure_dit(log_fn)
+        try:
+            status: LoraStatus = await self.engine.load_lora(Path(target))
+        except EngineResponseError as exc:
+            if "not initialized" not in str(exc.detail).lower():
+                raise
+            # 모델 상태를 확인하지 못했던 경우: 한 번 올리고 다시 시도
+            log_fn("ACE 음악 모델 로드 중 (/v1/init) — 처음에는 수 분 걸릴 수 있습니다")
+            await self.engine.invoke("init_model", {"init_llm": False}, timeout=1800.0)
+            status = await self.engine.load_lora(Path(target))
         if status.loaded is False:
             raise EngineResponseError("LoRA 로드 실패", detail=status.raw)
         self._believed_adapter = target
@@ -212,11 +224,34 @@ class MusicService:
                 raise ValidationError("기존 ACE 자산 폴더에는 저장할 수 없습니다.", detail=str(path))
         return path
 
-    async def _unload(self, log_fn: LogFn) -> LoraStatus:
+    async def _dit_loaded(self) -> bool | None:
+        """ACE 에 음악 모델(DiT)이 올라가 있는지. 확인할 수 없으면 None."""
+        try:
+            data = await self.engine.invoke("models")
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if not isinstance(data, dict) or "models" not in data:
+            return None
+        return any(isinstance(m, dict) and m.get("is_loaded") for m in data.get("models") or [])
+
+    async def _ensure_dit(self, log_fn: LogFn) -> None:
+        """LoRA 를 올리려면 음악 모델이 먼저 올라가 있어야 한다 (ACE 는 첫 생성 때만 자동으로 올림).
+        이미 올라가 있으면 다시 올리지 않는다 (/v1/init 은 무조건 한 벌 더 올려 메모리 부족을 낸다)."""
+        if await self._dit_loaded() is False:
+            log_fn("ACE 음악 모델 로드 중 (/v1/init) — 처음에는 수 분 걸릴 수 있습니다")
+            await self.engine.invoke("init_model", {"init_llm": False}, timeout=1800.0)
+            log_fn("ACE 음악 모델 로드 완료")
+
+    async def _unload(self, log_fn: LogFn) -> LoraStatus | None:
         """LoRA 언로드. ACE 가 기본 모델로 되돌릴 수 없는 상태면 이유와 해결 방법을 알려 준다."""
         try:
             return await self.engine.unload_lora()
         except EngineResponseError as exc:
+            if "not initialized" in str(exc.detail).lower():
+                log_fn("ACE 에 아직 모델이 없습니다 (재시작 직후) — 내릴 LoRA 도 없으므로 기본 모델로 진행")
+                return None
             if "backup not found" in str(exc.detail).lower():
                 raise EngineResponseError(
                     "ACE 서버가 기본 모델로 되돌릴 수 없는 상태입니다 (학습용 LoRA 가 모델에 남아 있음). "

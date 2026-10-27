@@ -233,7 +233,7 @@ async def music_training_page() -> None:
 
             with ui.tab_panel(t_models).classes("p-0"):
                 models_tab(MusicModelsViewModel())
-    await vm.load_capabilities()
+    ui.timer(0.1, vm.load_capabilities, once=True)   # 페이지를 먼저 보여 주고 ACE 기능 확인 (생성 중엔 응답이 늦음)
 
 
 # PUT /v1/dataset/sample/{idx} 가 받는 필드 (설치본 스키마 확인)

@@ -469,4 +469,4 @@ async def settings_page() -> None:
 
         cap_table()
         scope.refresh_on(cap_table, "capabilities")
-    await vm.run_diagnostics()
+    ui.timer(0.1, vm.run_diagnostics, once=True)     # 페이지를 먼저 보여 주고 진단

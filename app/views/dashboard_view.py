@@ -79,4 +79,6 @@ async def dashboard_page() -> None:
             songs()
             scope.refresh_on(songs, "recent_songs")
 
-    await vm.refresh_health()
+    # 페이지를 먼저 보여 주고, 엔진 상태는 연결된 뒤 따로 확인한다.
+    # (ACE 가 음악을 만드는 중이면 /health 응답이 몇 초씩 늦어 'response_timeout 3.0 seconds' 경고가 났다)
+    ui.timer(0.1, vm.refresh_health, once=True)
