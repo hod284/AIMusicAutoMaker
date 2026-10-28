@@ -42,6 +42,8 @@ class Settings:
     studio_root: Path = STUDIO_ROOT
     ace_root: Path = field(default_factory=lambda: _expand("~/AI-Music-Studio/ACE-Step-1.5"))
     lyrics_root: Path = field(default_factory=lambda: _expand("~/AI-Music-Studio/lyrics-ai"))
+    # 목소리(보컬 변환): voice-ai/.venv = audio-separator, voice-ai/seed-vc/.venv = Seed-VC
+    voice_root: Path = field(default_factory=lambda: _expand("~/AI-Music-Studio/voice-ai"))
     workspace_dir: Path = STUDIO_ROOT / "workspace"
     data_dir: Path = STUDIO_ROOT / "data"
     ffmpeg8_lib: Path = Path("/opt/homebrew/opt/ffmpeg@8/lib")
@@ -61,6 +63,7 @@ class Settings:
     # --- 엔진 선택 (어댑터 팩토리) ---
     music_engine: str = "ace"   # ace | mock
     lyrics_engine: str = "mlx"  # mlx | mock
+    voice_engine: str = "local"  # local (audio-separator + Seed-VC + FFmpeg) | mock
 
     # --- 정책 ---
     max_upload_mb: int = 200
@@ -69,6 +72,14 @@ class Settings:
     ace_poll_timeout_s: float = 1800.0
     http_timeout_s: float = 30.0
     lyrics_timeout_s: float = 600.0
+    voice_timeout_s: float = 3600.0     # 분리·변환 한 단계 최대 시간
+    applio_root: Path | None = None
+    applio_python: Path | None = None
+    separator_model: str = ""           # 비우면 audio-separator 기본 모델 (BS-RoFormer)
+
+    def __post_init__(self) -> None:
+        self.applio_root = Path(self.applio_root) if self.applio_root else self.voice_root / "Applio"
+        self.applio_python = Path(self.applio_python) if self.applio_python else self.applio_root / ".venv" / "bin" / "python"
 
     @property
     def db_path(self) -> Path:
@@ -81,6 +92,28 @@ class Settings:
     @property
     def lyrics_python(self) -> Path:
         return self.lyrics_root / ".venv" / "bin" / "python"
+
+    @property
+    def seedvc_root(self) -> Path:
+        return self.voice_root / "seed-vc"
+
+    @property
+    def seedvc_python(self) -> Path:
+        return self.seedvc_root / ".venv" / "bin" / "python"
+
+    @property
+    def separator_bin(self) -> Path:
+        return self.voice_root / ".venv" / "bin" / "audio-separator"
+
+    @property
+    def separator_model_dir(self) -> Path:
+        return self.voice_root / "models"
+
+    @property
+    def ffmpeg_exe(self) -> str:
+        """FFmpeg 8 (brew ffmpeg@8) 이 있으면 그것, 없으면 PATH 의 ffmpeg."""
+        exe = self.ffmpeg8_bin / "ffmpeg"
+        return str(exe) if exe.is_file() else "ffmpeg"
 
     @property
     def categories_dir(self) -> Path:
@@ -100,6 +133,10 @@ class Settings:
             self.ace_root / "checkpoints",
             self.lyrics_root / ".venv",
             self.ace_root / ".venv",
+            self.voice_root / ".venv",
+            self.seedvc_root / ".venv",
+            self.applio_root / ".venv",
+            self.seedvc_root / "checkpoints",
         ]
 
     def ace_subprocess_env(self) -> dict[str, str]:
@@ -127,6 +164,12 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "ACE_DEFAULT_MODEL": ("ace_default_model", str),
     "STUDIO_MUSIC_ENGINE": ("music_engine", str),
     "STUDIO_LYRICS_ENGINE": ("lyrics_engine", str),
+    "STUDIO_VOICE_ENGINE": ("voice_engine", str),
+    "STUDIO_VOICE_ROOT": ("voice_root", Path),
+    "STUDIO_APPLIO_ROOT": ("applio_root", Path),
+    "STUDIO_APPLIO_PYTHON": ("applio_python", Path),
+    "STUDIO_VOICE_TIMEOUT_S": ("voice_timeout_s", float),
+    "STUDIO_SEPARATOR_MODEL": ("separator_model", str),
     "STUDIO_MAX_UPLOAD_MB": ("max_upload_mb", int),
     "STUDIO_GPU_CONCURRENCY": ("gpu_heavy_concurrency", int),
     "ACE_POLL_INTERVAL_S": ("ace_poll_interval_s", float),

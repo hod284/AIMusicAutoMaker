@@ -71,6 +71,8 @@ def _song_list_tab(vm: LibraryViewModel) -> None:
                             for name in vm.category_names(song.id):
                                 ui.badge(name, color="primary").props("outline")
                     ui.badge(vm.model_name(song.music_model_id), color="grey").classes("shrink-0")
+                    if g.get("voice"):
+                        ui.badge(f"목소리 · {g['voice'].get('model_name', '')}", color="purple").classes("shrink-0")
                     if g.get("is_mock"):
                         ui.badge("MOCK", color="warning")
                     ui.audio(f"/media/songs/{song.id}").props("preload=none").classes("flex-1 min-w-[240px]")
@@ -78,6 +80,8 @@ def _song_list_tab(vm: LibraryViewModel) -> None:
                         f"/media/songs/{s.id}?download=1", new_tab=True)).props("flat dense round").tooltip("다운로드")
                     ui.button(icon="info", on_click=lambda s=song: _song_detail(vm, s)) \
                         .props("flat dense round").tooltip("가사 · 프롬프트 · 파일 위치")
+                    ui.button(icon="record_voice_over", on_click=lambda s=song: ui.navigate.to(f"/vocal-convert?song={s.id}")) \
+                        .props("flat dense round").tooltip("보컬 변환")
 
     listing()
     scope.refresh_on(listing, "songs", "membership", "categories")
@@ -188,6 +192,10 @@ def _song_detail(vm: LibraryViewModel, song) -> None:  # type: ignore[no-untyped
             ui.label("카테고리: " + ", ".join(cats)).classes("text-sm")
         ui.label(f"파일: {song.audio_path}").classes("text-xs font-mono break-all")
         ui.label(f"음악 모델: {vm.model_name(song.music_model_id)} · Seed: {g.get('seed', '-')}").classes("text-sm")
+        if g.get("voice"):
+            v = g["voice"]
+            ui.label(f"목소리 변환: {v.get('model_name', '')} · 키 {v.get('semi_tone_shift', 0):+d} · "
+                     f"스텝 {v.get('diffusion_steps', '-')}").classes("text-sm text-primary")
         ui.label(f"프롬프트: {song.prompt or '(없음)'}").classes("text-sm")
         ui.code(g.get("lyrics", "") or "(가사 없음)", language="text").classes("w-full max-h-[50vh] overflow-y-auto")
         ui.button("닫기", on_click=dialog.close).props("flat")
@@ -251,15 +259,25 @@ async def training_page() -> None:
 
 
 def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
+    lockable: list[ui.element] = []      # 학습 중에 잠글 입력들
+
+    def lock(el):  # type: ignore[no-untyped-def]
+        lockable.append(el)
+        return el
+
+    def apply_lock(_v=None) -> None:  # type: ignore[no-untyped-def]
+        for el in lockable:
+            el.set_enabled(not vm.locked)
+
     # --- 결과 이름 / 저장 폴더 ---
     with ui.row().classes("w-full items-center gap-4"):
-        ui.input("결과 모델 이름 *", placeholder="예: 감성 발라드 작사 v1").bind_value(vm, "model_title").props(
-            "maxlength=80 counter").classes("w-80")
-        ui.input("결과 저장 폴더", placeholder="비우면 studio/workspace/library/lyrics/adapters") \
-            .bind_value(vm, "export_dir").classes("flex-1 min-w-[280px]")
-        ui.button("찾아보기", icon="folder_open", on_click=lambda: folder_picker(
+        lock(ui.input("결과 모델 이름 *", placeholder="예: 감성 발라드 작사 v1").bind_value(vm, "model_title").props(
+            "maxlength=80 counter").classes("w-80"))
+        lock(ui.input("결과 저장 폴더", placeholder="비우면 studio/workspace/library/lyrics/adapters")
+             .bind_value(vm, "export_dir").classes("flex-1 min-w-[280px]"))
+        lock(ui.button("찾아보기", icon="folder_open", on_click=lambda: folder_picker(
             vm.browse, vm.browse_root, vm, "export_dir", title="결과 저장 폴더 선택",
-            start=vm.export_dir or None)).props("outline")
+            start=vm.export_dir or None)).props("outline"))
     ui.label("결과는 '결과 저장 폴더/결과 모델 이름' 폴더에 저장됩니다. 같은 이름 폴더가 있으면 덮어쓰지 않고 멈춥니다.") \
         .classes("text-xs text-gray-500")
 
@@ -273,8 +291,8 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
         async def on_txt(e) -> None:  # type: ignore[no-untyped-def]
             vm.add_txt(e.file.name, await e.file.read())
 
-        uploader = ui.upload(label="가사 .txt 올리기 (여러 개 선택 가능)", multiple=True, auto_upload=True,
-                             on_upload=on_txt, max_file_size=200_000).props("accept=.txt").classes("w-full")
+        uploader = lock(ui.upload(label="가사 .txt 올리기 (여러 개 선택 가능)", multiple=True, auto_upload=True,
+                                  on_upload=on_txt, max_file_size=200_000).props("accept=.txt").classes("w-full"))
 
         @ui.refreshable
         def txt_list() -> None:
@@ -283,7 +301,7 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
                 ui.label(f"올린 가사 {len(files)}곡").classes("text-sm font-bold")
                 if files:
                     ui.button("모두 빼기", on_click=lambda: (vm.clear_txt(), uploader.reset())) \
-                        .props("flat dense color=negative size=sm")
+                        .props("flat dense color=negative size=sm").set_enabled(not vm.locked)
             with ui.column().classes("w-full gap-1 max-h-72 overflow-y-auto"):
                 for name, text in files:
                     first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
@@ -294,12 +312,12 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
                         ui.button(icon="visibility", on_click=lambda n=name: _show_preview(vm, n)) \
                             .props("flat dense round").tooltip("학습 예제로 어떻게 바뀌는지 보기")
                         ui.button(icon="close", on_click=lambda n=name: vm.remove_txt(n)) \
-                            .props("flat dense round color=negative")
+                            .props("flat dense round color=negative").set_enabled(not vm.locked)
             ui.button("이 가사들로 데이터셋 버전 만들기", icon="create_new_folder", on_click=vm.build_from_txt) \
-                .set_enabled(len(files) >= 2)
+                .set_enabled(len(files) >= 2 and not vm.locked)
 
         txt_list()
-        scope.refresh_on(txt_list, "txt_files")
+        scope.refresh_on(txt_list, "txt_files", "job")
 
         @ui.refreshable
         def report() -> None:
@@ -321,14 +339,15 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
                 text["value"] = await e.file.text()
                 vm.preview_jsonl(text["value"])
 
-            ui.upload(label="JSONL 업로드", on_upload=on_upload, auto_upload=True, max_file_size=20_000_000).props(
-                "accept=.jsonl").classes("w-full")
-            ui.textarea("또는 붙여넣기 (한 줄에 {\"messages\":[user, assistant]})").bind_value(text, "value") \
-                .props("outlined").classes("w-full font-mono text-xs")
+            lock(ui.upload(label="JSONL 업로드", on_upload=on_upload, auto_upload=True, max_file_size=20_000_000)
+                 .props("accept=.jsonl").classes("w-full"))
+            lock(ui.textarea("또는 붙여넣기 (한 줄에 {\"messages\":[user, assistant]})").bind_value(text, "value")
+                 .props("outlined").classes("w-full font-mono text-xs"))
             with ui.row().classes("gap-2"):
-                ui.button("검증", icon="fact_check", on_click=lambda: vm.preview_jsonl(text["value"])).props("outline")
-                ui.button("JSONL 로 데이터셋 버전 만들기", on_click=lambda: vm.build_dataset(text["value"])) \
-                    .props("outline")
+                lock(ui.button("검증", icon="fact_check", on_click=lambda: vm.preview_jsonl(text["value"]))
+                     .props("outline"))
+                lock(ui.button("JSONL 로 데이터셋 버전 만들기", on_click=lambda: vm.build_dataset(text["value"]))
+                     .props("outline"))
 
     # --- ② 학습 ---
     with section("② 학습 (mlx_lm.lora)", "비운 값은 mlx_lm 기본값을 씁니다. 학습 중에는 가사 생성이 잠시 멈출 수 있습니다."):
@@ -340,32 +359,36 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
             options = {d.id: f"{vm.dataset_label(d)} · {vm.dataset_counts(d)} · {d.created_at.strftime('%m-%d %H:%M')}"
                        for d in reversed(vm.datasets)}
             ui.select(options, label="데이터셋 *", value=vm.dataset_id,
-                      on_change=lambda e: vm.select_dataset(e.value)).classes("w-full")
+                      on_change=lambda e: vm.select_dataset(e.value)).classes("w-full").set_enabled(not vm.locked)
             if vm.dataset:
                 ui.label(vm.dataset.source_path).classes("text-xs text-gray-400 break-all")
 
         dataset_picker()
-        scope.refresh_on(dataset_picker, "datasets", "dataset_id")
+        scope.refresh_on(dataset_picker, "datasets", "dataset_id", "job")
 
-        form = {"iters": 200, "batch_size": 1, "learning_rate": None, "num_layers": None,
-                "max_seq_length": None, "save_every": None}
+        form = vm.form
         with ui.row().classes("items-end gap-3"):
-            ui.number("반복 횟수 (iters)", min=1).bind_value(form, "iters").classes("w-36")
-            ui.number("batch size", min=1).bind_value(form, "batch_size").classes("w-28")
-            ui.number("learning rate", format="%.6f", placeholder="기본").bind_value(form, "learning_rate") \
-                .classes("w-36")
-            ui.number("LoRA 레이어 수", min=1, placeholder="기본").bind_value(form, "num_layers").classes("w-32")
-            ui.number("최대 길이 (토큰)", min=128, placeholder="기본").bind_value(form, "max_seq_length") \
-                .classes("w-36")
-            ui.number("저장 주기 (iter)", min=1, placeholder="기본").bind_value(form, "save_every").classes("w-32")
+            lock(ui.number("반복 횟수 (iters)", min=1).bind_value(form, "iters").classes("w-36"))
+            lock(ui.number("batch size", min=1).bind_value(form, "batch_size").classes("w-28"))
+            lock(ui.number("learning rate", format="%.6f", placeholder="기본").bind_value(form, "learning_rate")
+                 .classes("w-36"))
+            lock(ui.number("LoRA 레이어 수", min=1, placeholder="기본").bind_value(form, "num_layers").classes("w-32"))
+            lock(ui.number("최대 길이 (토큰)", min=128, placeholder="기본").bind_value(form, "max_seq_length")
+                 .classes("w-36"))
+            lock(ui.number("저장 주기 (iter)", min=1, placeholder="기본").bind_value(form, "save_every")
+                 .classes("w-32"))
 
         @ui.refreshable
         def buttons() -> None:
-            with ui.row().classes("items-center gap-2"):
-                start = ui.button("학습 시작", icon="play_arrow", on_click=lambda: vm.start_training(form))
-                start.set_enabled(not vm.training)
+            with ui.row().classes("items-center gap-3"):
                 if vm.training:
+                    ui.button("학습 중…", icon="hourglass_top").props("disable").mark("lyrics-train")
+                    ui.spinner("dots", size="lg", color="primary")
                     ui.button("중지", icon="stop", on_click=vm.cancel).props("outline color=negative")
+                    ui.label("학습이 끝날 때까지 입력이 잠깁니다. 다른 메뉴에 다녀와도 계속 진행됩니다.") \
+                        .classes("text-xs text-gray-500")
+                else:
+                    ui.button("학습 시작", icon="play_arrow", on_click=lambda: vm.start_training()).mark("lyrics-train")
 
         buttons()
         scope.refresh_on(buttons, "job")
@@ -405,6 +428,9 @@ def _lyrics_train_tab(vm: TrainingViewModel, scope: ViewScope) -> None:
 
         train_status()
         scope.refresh_on(train_status, "job", "losses", "val_losses", "job_logs")
+
+    apply_lock()
+    scope.on("job", apply_lock)
 
 
 def _show_preview(vm: TrainingViewModel, filename: str) -> None:

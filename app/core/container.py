@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from app.adapters.factory import AdapterFactory
-from app.adapters.ports import LyricsEnginePort, MusicEnginePort
+from app.adapters.ports import LyricsEnginePort, MusicEnginePort, VoiceEnginePort
 from app.core.config import Settings, get_settings
 from app.core.observer import EventBus, Topics
 from app.core.singleton import SingletonMeta
@@ -39,6 +39,7 @@ from app.services.music_training_service import (
     MusicScanHandler,
     MusicTrainHandler,
 )
+from app.services.voice_service import VoiceConvertHandler, VoiceService, VoiceTrainHandler
 from app.services.workspace import WorkspaceManager
 from app.utils.path_guard import PathGuard
 
@@ -47,7 +48,7 @@ log = logging.getLogger(__name__)
 
 class ServiceContainer(metaclass=SingletonMeta):
     def __init__(self, settings: Settings | None = None, *, music: MusicEnginePort | None = None,
-                 lyrics: LyricsEnginePort | None = None) -> None:
+                 lyrics: LyricsEnginePort | None = None, voice: VoiceEnginePort | None = None) -> None:
         self.settings = s = settings or get_settings()
         s.workspace_dir.mkdir(parents=True, exist_ok=True)
         s.data_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +65,7 @@ class ServiceContainer(metaclass=SingletonMeta):
         # --- 어댑터 (Adapter + Factory) ---
         self.music_engine = music or AdapterFactory.music(s)
         self.lyrics_engine = lyrics or AdapterFactory.lyrics(s)
+        self.voice_engine = voice or AdapterFactory.voice(s)
 
         # --- 리포지토리 ---
         self.category_repo = CategoryRepository(self.db)
@@ -90,6 +92,9 @@ class ServiceContainer(metaclass=SingletonMeta):
             self.music_engine, self.categories, self.dataset_repo, self.guard, s.ace_studio_share_dir, self.lock,
             max_upload_mb=s.max_upload_mb,
         )
+        self.voice = VoiceService(self.voice_engine, self.categories, self.song_repo, self.guard,
+                                  s.workspace_dir / "library" / "voice", self.bus, max_upload_mb=s.max_upload_mb,
+                                  resolve_output_dir=self.music.resolve_output_dir)
 
         # --- 잡 (Command 핸들러 등록) ---
         self.jobs = JobManager(self.job_repo, self.lock, self.bus)
@@ -103,6 +108,8 @@ class ServiceContainer(metaclass=SingletonMeta):
             MusicLabelHandler(self.music_datasets),
             MusicPreprocessHandler(self.music_datasets),
             MusicTrainHandler(self.music_datasets, self.music),
+            VoiceTrainHandler(self.voice),
+            VoiceConvertHandler(self.voice),
         ):
             self.jobs.register(handler)
 
@@ -110,7 +117,7 @@ class ServiceContainer(metaclass=SingletonMeta):
         fixed = self.jobs.reconcile_on_startup()
         if fixed:
             log.warning("재시작으로 중단된 작업 %d개를 실패 처리했습니다.", len(fixed))
-        for engine in (self.music_engine, self.lyrics_engine):
+        for engine in (self.music_engine, self.lyrics_engine, self.voice_engine):
             try:
                 health = await engine.health()
                 self.bus.publish(Topics.ENGINE_STATUS, health=health)

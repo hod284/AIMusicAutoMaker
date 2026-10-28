@@ -19,7 +19,7 @@ def models_tab(vm: ModelsViewModel) -> None:
             new_cat = {"name": ""}
             with ui.row().classes("w-full items-end gap-2"):
                 ui.input("새 카테고리 이름").bind_value(new_cat, "name").classes("flex-1")
-                ui.button("만들기", icon="add",
+                ui.button("카테고리 추가", icon="add",
                           on_click=lambda: (vm.create_category(new_cat["name"]), new_cat.update(name=""))
                           ).props("outline dense")
 
@@ -49,8 +49,8 @@ def models_tab(vm: ModelsViewModel) -> None:
                                 ui.button(icon="remove_circle_outline", on_click=lambda m=m: vm.remove(m.id)) \
                                     .props("flat dense round color=negative").tooltip("카테고리에서 빼기")
                 if vm.active_id:
-                    ui.button("LoRA 없이 기본 모델 사용", on_click=lambda: vm.use(None)).props("flat dense size=sm")
-                ui.label("'사용 중' 모델이 곡 만들기에서 이 카테고리를 고를 때 적용됩니다.").classes(
+                    ui.button(vm.none_label, on_click=lambda: vm.use(None)).props("flat dense size=sm")
+                ui.label(vm.use_hint).classes(
                     "text-xs text-gray-500")
 
             category_panel()

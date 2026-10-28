@@ -236,3 +236,67 @@ class LyricsEnginePort(ABC):
         from app.core.errors import CapabilityUnsupportedError
 
         raise CapabilityUnsupportedError(detail="lyrics_train")
+
+
+# ---------------------------------------------------------------------------
+# 목소리 (보컬 분리 → 목소리 변환 → 합치기, 목소리 모델 학습)
+# ---------------------------------------------------------------------------
+LogFn = Callable[[str], None]
+
+SEEDVC_SVC_PRESET = "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml"   # Seed-VC 노래(44.1kHz, f0) 프리셋
+
+
+class VoiceTrainSpec(BaseModel):
+    """Seed-VC train.py 실행 값. 결과는 ``log_dir / run_name`` 에 생긴다 (ft_model.pth + 설정 yml)."""
+
+    dataset_dir: Path
+    log_dir: Path
+    run_name: str
+    preset: str = SEEDVC_SVC_PRESET
+    max_steps: int = 500
+    save_every: int = 500
+    batch_size: int = 2
+
+
+class VoiceConvertSpec(BaseModel):
+    """Seed-VC inference.py 실행 값 (노래: f0_condition=True 로 원래 음정 유지)."""
+
+    source: Path                     # 바꿀 보컬 (분리된 보컬)
+    reference: Path | None = None    # Seed-VC 목표 목소리 참고 녹음
+    backend: str = "seed-vc"          # seed-vc | rvc
+    index: Path | None = None
+    index_rate: float = 0.3
+    output_dir: Path
+    checkpoint: Path | None = None   # 학습한 목소리 모델 (없으면 Seed-VC 기본 노래 모델 + 참고 녹음만)
+    config: Path | None = None
+    diffusion_steps: int = 30
+    semi_tone_shift: int = 0
+    inference_cfg_rate: float = 0.7
+    f0_condition: bool = True
+
+
+class VoiceEnginePort(ABC):
+    name: str = "voice"
+    is_mock: bool = False
+
+    @abstractmethod
+    async def health(self) -> EngineHealth: ...
+
+    @abstractmethod
+    async def separate(self, src: Path, out_dir: Path, log: LogFn) -> tuple[Path, Path]:
+        """(보컬, 반주) 파일 경로. out_dir 은 새 폴더여야 한다."""
+
+    @abstractmethod
+    async def convert(self, spec: VoiceConvertSpec, log: LogFn) -> Path:
+        """변환된 보컬 wav 경로."""
+
+    @abstractmethod
+    async def start_training(self, spec: VoiceTrainSpec, on_progress: ProgressCallback) -> TrainHandle: ...
+
+    @abstractmethod
+    async def split_clips(self, src: Path, out_dir: Path, seconds: float = 15.0) -> list[Path]:
+        """학습용으로 1~30초 조각(모노 44.1kHz wav)으로 자른다. 1초 미만 조각은 버린다."""
+
+    @abstractmethod
+    async def mix(self, vocals: Path, instrumental: Path, dest: Path) -> Path:
+        """보컬 + 반주 → dest (확장자로 형식 결정: .mp3/.wav/.flac). dest 가 있으면 오류."""

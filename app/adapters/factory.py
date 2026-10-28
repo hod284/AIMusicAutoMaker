@@ -13,17 +13,21 @@ from app.adapters.ace.mock_adapter import MockMusicAdapter
 from app.adapters.ace.rest_adapter import AceRestAdapter
 from app.adapters.mlx.mock_adapter import MockLyricsAdapter
 from app.adapters.mlx.process_adapter import MlxProcessAdapter
-from app.adapters.ports import LyricsEnginePort, MusicEnginePort
+from app.adapters.ports import LyricsEnginePort, MusicEnginePort, VoiceEnginePort
+from app.adapters.voice.local_adapter import LocalVoiceAdapter
+from app.adapters.voice.mock_adapter import MockVoiceAdapter
 from app.core.config import Settings
 from app.core.errors import ValidationError
 
 MusicBuilder = Callable[[Settings], MusicEnginePort]
 LyricsBuilder = Callable[[Settings], LyricsEnginePort]
+VoiceBuilder = Callable[[Settings], VoiceEnginePort]
 
 
 class AdapterFactory:
     _music: dict[str, MusicBuilder] = {}
     _lyrics: dict[str, LyricsBuilder] = {}
+    _voice: dict[str, VoiceBuilder] = {}
 
     @classmethod
     def register_music(cls, name: str, builder: MusicBuilder) -> None:
@@ -32,6 +36,17 @@ class AdapterFactory:
     @classmethod
     def register_lyrics(cls, name: str, builder: LyricsBuilder) -> None:
         cls._lyrics[name] = builder
+
+    @classmethod
+    def register_voice(cls, name: str, builder: VoiceBuilder) -> None:
+        cls._voice[name] = builder
+
+    @classmethod
+    def voice(cls, settings: Settings) -> VoiceEnginePort:
+        try:
+            return cls._voice[settings.voice_engine](settings)
+        except KeyError as exc:
+            raise ValidationError(f"알 수 없는 목소리 엔진: {settings.voice_engine}") from exc
 
     @classmethod
     def music(cls, settings: Settings) -> MusicEnginePort:
@@ -49,7 +64,7 @@ class AdapterFactory:
 
     @classmethod
     def available(cls) -> dict[str, list[str]]:
-        return {"music": sorted(cls._music), "lyrics": sorted(cls._lyrics)}
+        return {"music": sorted(cls._music), "lyrics": sorted(cls._lyrics), "voice": sorted(cls._voice)}
 
 
 AdapterFactory.register_music(
@@ -64,3 +79,12 @@ AdapterFactory.register_lyrics(
     "mlx", lambda s: MlxProcessAdapter(s.lyrics_python, s.qwen_base_model, s.lyrics_root, s.lyrics_timeout_s)
 )
 AdapterFactory.register_lyrics("mock", lambda s: MockLyricsAdapter())
+AdapterFactory.register_voice(
+    "local",
+    lambda s: LocalVoiceAdapter(
+        s.separator_bin, s.separator_model_dir, s.seedvc_root, s.seedvc_python, ffmpeg=s.ffmpeg_exe,
+        separator_model=s.separator_model, timeout_s=s.voice_timeout_s, env=s.ace_subprocess_env(),
+        applio_root=s.applio_root, applio_python=s.applio_python,
+    ),
+)
+AdapterFactory.register_voice("mock", lambda s: MockVoiceAdapter())

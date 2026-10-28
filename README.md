@@ -13,7 +13,7 @@ bash scripts/verify_install.sh           # Phase 0: 설치본 읽기 전용 점�
 .venv/bin/python main.py                 # http://127.0.0.1:8080
 ```
 
-엔진 없이 UI만 볼 때: `STUDIO_MUSIC_ENGINE=mock STUDIO_LYRICS_ENGINE=mock .venv/bin/python main.py`
+엔진 없이 UI만 볼 때: `STUDIO_MUSIC_ENGINE=mock STUDIO_LYRICS_ENGINE=mock STUDIO_VOICE_ENGINE=mock .venv/bin/python main.py`
 (Mock 결과는 화면·DB에 `MOCK` 으로 표시되어 실제 생성물과 섞이지 않습니다.)
 
 테스트: `.venv/bin/python -m pytest -q`
@@ -106,3 +106,18 @@ Model
 4. `mlx_lm.lora` 산출물 파일명 (`adapters.safetensors` 가정) 확인 후 `category_service.QWEN_WEIGHT_CANDIDATES` 조정.
 5. MLX DiT / MPS 경로에서 LoRA 가 실제 적용되는지는 로드 로그만으로 판단하지 말고 A/B 생성으로 확인.
 6. ACE 서버 기동 스크립트가 `DYLD_LIBRARY_PATH`(FFmpeg 8)를 전달하는지 (verify 스크립트 4단계).
+
+### 외부 RVC 보컬 모델
+
+보컬 변환 → ② 바꿀 목소리 → **모델 넣기 (RVC)** 에서 `.pth`와 선택적인 `.index`를 올립니다.
+업로드한 파일은 `workspace/library/voice/rvc`에 복사되어 다음에도 선택할 수 있습니다.
+인덱스는 해당 모델과 함께 배포된 파일을 선택하세요. 인덱스가 없으면 자동으로 반영 비율 0으로 변환합니다.
+RVC는 참고 녹음과 변환 스텝을 사용하지 않으며, 키 설정은 그대로 적용됩니다.
+
+Applio는 Studio와 별도 Python 환경에 설치해야 합니다. 기본 설치 위치는 `voice-ai/Applio`입니다.
+현재 설치본은 Applio `fb427aa388a954a387da7034fbbc08313f7ffe8c`의 `requirements-engine.txt`를 사용한 추론 전용 환경으로 구성되어 있습니다.
+ContentVec와 RMVPE 공통 가중치도 설치되어 있습니다.
+다른 위치에 설치했다면 `.env`의 `STUDIO_APPLIO_ROOT`와 `STUDIO_APPLIO_PYTHON`을 설정하고 Studio를 재시작하세요.
+공식 저장소: https://github.com/IAHispano/Applio
+Studio는 Applio `core.run_infer_script`를 별도 프로세스로 실행하며 실패·취소·시간 초과를 기존 작업 시스템에 전달합니다.
+모델은 학습용 체크포인트가 아닌 RVC 추론용 `.pth`를 사용하세요. ZIP은 압축을 풀어서 올리세요.

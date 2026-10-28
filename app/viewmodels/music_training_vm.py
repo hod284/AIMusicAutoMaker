@@ -40,9 +40,20 @@ class MusicTrainingViewModel(BaseViewModel):
     model_title = ObservableProperty("")   # 학습 결과 모델 이름 (맨 위 입력칸)
     export_dir = ObservableProperty("")    # 결과 저장 폴더 (비우면 기본 위치)
 
+    # 단계 버튼: (번호, 잡 종류, 이 단계를 하려면 데이터셋이 도달해 있어야 하는 단계 번호)
+    STEPS = ((2, JobKind.MUSIC_SCAN, 1), (3, JobKind.MUSIC_LABEL, 2), (4, JobKind.MUSIC_PREPROCESS, 3),
+             (5, JobKind.MUSIC_TRAIN, 4))
+    STEP_HINT = {JobKind.MUSIC_SCAN: "", JobKind.MUSIC_LABEL: "② 스캔을 먼저 하세요.",
+                 JobKind.MUSIC_PREPROCESS: "③ 자동 라벨링을 먼저 하세요.", JobKind.MUSIC_TRAIN: "④ 전처리를 먼저 하세요."}
+
     def __init__(self, container=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(container)
         self.svc = self.c.music_datasets
+        # 화면 입력값 (단계 실행 때 작업 기록에 같이 남겨, 다시 들어오면 그대로 되살린다)
+        self.scan_opts: dict[str, Any] = {"tag": "", "instrumental": False}
+        self.label_opts: dict[str, Any] = {"transcribe_lyrics": False, "format_lyrics": False, "only_unlabeled": False}
+        self.train_form: dict[str, Any] = {"train_epochs": 10, "learning_rate": None, "lora_rank": None,
+                                           "lora_alpha": None, "train_batch_size": 1, "save_every_n_epochs": 5}
         self.tracker = JobTracker(self, self._on_job, self._on_log)
         self._reload_staged()
         self._reload_datasets(select_latest=True)
@@ -50,6 +61,19 @@ class MusicTrainingViewModel(BaseViewModel):
         job = self.tracker.resume(STEP_NAME)
         if job and job.dataset_id:
             self.select_dataset(job.dataset_id)
+        if job is not None and not job.status.is_terminal:
+            self._restore(job.params)
+
+    def _restore(self, params: dict[str, Any]) -> None:
+        if "custom_tag" in params:
+            self.scan_opts.update(tag=params.get("custom_tag", ""), instrumental=bool(params.get("all_instrumental")))
+        if isinstance(params.get("options"), dict):
+            self.label_opts.update({k: v for k, v in params["options"].items() if k in self.label_opts})
+        cfg = params.get("config")
+        if isinstance(cfg, dict):
+            self.train_form.update({k: cfg[k] for k in self.train_form if k in cfg})
+            self.model_title = cfg.get("model_name", self.model_title)
+            self.export_dir = cfg.get("export_dir", self.export_dir)
 
     # --- 조회 ---
     @property
@@ -71,6 +95,25 @@ class MusicTrainingViewModel(BaseViewModel):
     @property
     def busy_job(self) -> bool:
         return self.job is not None and not self.job.status.is_terminal
+
+    @property
+    def locked(self) -> bool:
+        """단계가 실행 중이면 화면의 모든 입력과 다른 단계 버튼을 잠근다."""
+        return self.busy_job
+
+    def _guard(self) -> bool:
+        if self.locked:
+            self.error = f"{self.step_name} 이(가) 실행 중입니다. 끝난 뒤에 할 수 있습니다."
+            return True
+        return False
+
+    def step_ready(self, kind: JobKind) -> bool:
+        """이 단계 버튼을 누를 수 있는지 (실행 중이 아니고, 데이터셋이 앞 단계를 마쳤는지)."""
+        need = next(n for _, k, n in self.STEPS if k == kind)
+        return not self.locked and self.dataset is not None and self.step >= need
+
+    def running_step(self, kind: JobKind) -> bool:
+        return self.locked and self.job is not None and self.job.kind == kind
 
     @property
     def missing_caps(self) -> list[str]:
@@ -102,6 +145,12 @@ class MusicTrainingViewModel(BaseViewModel):
         if select_latest or self.dataset_id not in {d.id for d in self.datasets}:
             self.select_dataset(self.datasets[-1].id if self.datasets else None)
 
+    def choose_dataset(self, dataset_id: str | None) -> None:
+        """화면에서 데이터셋 바꾸기 (실행 중에는 막음)."""
+        if self._guard():
+            return
+        self.select_dataset(dataset_id)
+
     def select_dataset(self, dataset_id: str | None) -> None:
         self.dataset_id = dataset_id
         self.samples = list(self.svc.samples.get(dataset_id, [])) if dataset_id else []
@@ -113,14 +162,20 @@ class MusicTrainingViewModel(BaseViewModel):
 
     # --- ① 업로드 ---
     def upload(self, filename: str, data: bytes) -> None:
+        if self._guard():
+            return
         if self.sync_command(lambda: self.svc.stage_upload(filename, data)):
             self._reload_staged()
 
     def remove_staged(self, name: str) -> None:
+        if self._guard():
+            return
         self.sync_command(lambda: self.svc.remove_staged(name))
         self._reload_staged()
 
     def create_dataset(self, rights_confirmed: bool, source_note: str) -> None:
+        if self._guard():
+            return
         if not rights_confirmed:
             self.error = "학습·생성에 사용할 권리가 있는 음원인지 확인 체크가 필요합니다."
             return
@@ -132,18 +187,22 @@ class MusicTrainingViewModel(BaseViewModel):
             self.select_dataset(ds.id)
 
     # --- ②~⑤ 단계 (잡으로 실행) ---
-    def scan(self, custom_tag: str, all_instrumental: bool) -> None:
+    def scan(self, custom_tag: str | None = None, all_instrumental: bool | None = None) -> None:
+        custom_tag = self.scan_opts["tag"] if custom_tag is None else custom_tag
+        all_instrumental = self.scan_opts["instrumental"] if all_instrumental is None else all_instrumental
         self._submit(JobKind.MUSIC_SCAN, {"custom_tag": custom_tag.strip(), "all_instrumental": all_instrumental})
 
     def auto_label(self, options: dict[str, Any] | None = None) -> None:
         """options: transcribe_lyrics / format_lyrics / only_unlabeled / skip_metas (설치본 스키마 확인됨)."""
-        opts = {k: bool(v) for k, v in (options or {}).items()}
+        opts = {k: bool(v) for k, v in (self.label_opts if options is None else options).items()}
         self._submit(JobKind.MUSIC_LABEL, {"options": opts})
 
     def preprocess(self) -> None:
         self._submit(JobKind.MUSIC_PREPROCESS, {})
 
-    def train(self, form: dict[str, Any]) -> None:
+    def train(self, form: dict[str, Any] | None = None) -> None:
+        form = self.train_form if form is None else form
+
         def _num(v: Any, cast: type) -> Any:
             return cast(v) if v not in (None, "") else None
         config = {
@@ -173,14 +232,14 @@ class MusicTrainingViewModel(BaseViewModel):
 
     # --- 검수 ---
     async def save_sample(self, index: int, changes: dict[str, Any]) -> None:
-        if not self.dataset_id:
+        if self._guard() or not self.dataset_id:
             return
         await self.run_command(lambda: self.svc.update_sample(self.dataset_id, index, changes),
                                success=f"샘플 {index + 1} 수정 저장")
         self.samples = list(self.svc.samples.get(self.dataset_id, []))
 
     async def reload_samples(self) -> None:
-        if not self.dataset_id:
+        if self._guard() or not self.dataset_id:
             return
         async def _do() -> None:
             self.samples = await self.svc.fetch_samples(self.dataset_id)
@@ -191,8 +250,7 @@ class MusicTrainingViewModel(BaseViewModel):
         if not self.dataset_id:
             self.error = "데이터셋을 먼저 선택하세요."
             return
-        if self.busy_job:
-            self.error = "이전 단계가 아직 실행 중입니다."
+        if self._guard():
             return
         self.job_logs = []
         job = self.sync_command(lambda: self.c.jobs.submit(

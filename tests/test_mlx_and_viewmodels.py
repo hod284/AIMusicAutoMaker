@@ -184,3 +184,76 @@ async def test_create_song_shows_results_finished_while_away(container, music):
     assert vm.songs and vm.draft_id is None
     vm.dispose()
     assert CreateSongViewModel(container).songs == []
+
+
+def test_music_training_steps_unlock_in_order_and_lock_while_running(container, tmp_path):
+    """음악 LoRA 학습: 단계는 순서대로 열리고, 한 단계가 실행 중이면 모든 단계·입력이 잠긴다."""
+    from app.domain.entities import Dataset, Job
+    from app.domain.enums import DatasetKind
+    from app.viewmodels.music_training_vm import MusicTrainingViewModel
+
+    ds = Dataset(category_id=None, kind=DatasetKind.MUSIC, version=1, status="scanned", source_path=str(tmp_path))
+    container.music_datasets.datasets.add(ds)
+    vm = MusicTrainingViewModel(container)
+    assert vm.dataset_id == ds.id
+    ready = {k: vm.step_ready(k) for _, k, _ in vm.STEPS}
+    assert ready == {JobKind.MUSIC_SCAN: True, JobKind.MUSIC_LABEL: True,
+                     JobKind.MUSIC_PREPROCESS: False, JobKind.MUSIC_TRAIN: False}     # 스캔까지 했으면 라벨링까지만
+
+    vm.job = Job(kind=JobKind.MUSIC_LABEL, status=JobStatus.RUNNING)                  # ③ 라벨링 실행 중
+    assert vm.locked and vm.running_step(JobKind.MUSIC_LABEL)
+    assert not any(vm.step_ready(k) for _, k, _ in vm.STEPS)
+    vm.upload("a.wav", b"RIFF....")
+    assert "실행 중" in vm.error and vm.staged == []
+    vm.error = ""
+    vm.choose_dataset(None)
+    assert vm.dataset_id == ds.id and "실행 중" in vm.error
+    vm.scan()
+    assert container.job_repo.list_recent() == []                                     # 새 단계가 시작되지 않음
+    vm.dispose()
+
+
+async def test_lyrics_training_locks_restores_and_unlocks(container, tmp_path, lyrics):
+    """가사 LoRA 학습: 학습 중 잠금, 다시 들어오면 입력값 그대로, 끝나면 풀림."""
+    from app.adapters.ports import TrainHandle
+    from app.viewmodels.misc_vms import TrainingViewModel
+
+    gate = asyncio.Event()
+
+    class _Handle(TrainHandle):
+        def __init__(self, spec):
+            self.spec = spec
+
+        async def wait(self):
+            await gate.wait()
+            self.spec.adapter_path.mkdir(parents=True, exist_ok=True)
+            (self.spec.adapter_path / "adapter_config.json").write_text("{}")
+            (self.spec.adapter_path / "adapters.safetensors").write_bytes(b"0")
+            return 0
+
+        async def cancel(self, grace_s=10.0):
+            gate.set()
+
+    async def start_training(spec, on_progress):
+        return _Handle(spec)
+
+    lyrics.start_training = start_training
+    vm = TrainingViewModel(container)
+    for i in range(2):
+        vm.add_txt(f"s{i}.txt", f"[Verse 1]\n가사 {i}\n[Chorus]\n후렴 {i}".encode())
+    vm.build_from_txt()
+    vm.model_title, vm.form["iters"] = "감성 작사", 77
+    vm.start_training()
+    await _until(lambda: vm.job and vm.job.status == JobStatus.RUNNING)
+    assert vm.locked
+    vm.add_txt("x.txt", "[Verse]\n또".encode())
+    assert vm.txt_files == [] and "학습 중" in vm.error
+    vm.dispose()
+
+    again = TrainingViewModel(container)                       # 다른 화면에 다녀옴
+    assert again.locked and again.model_title == "감성 작사" and again.form["iters"] == 77
+    gate.set()
+    await _until(lambda: again.job.status.is_terminal)
+    assert again.job.status == JobStatus.SUCCEEDED, again.error
+    assert not again.locked
+    again.dispose()

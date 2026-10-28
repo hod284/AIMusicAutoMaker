@@ -20,6 +20,8 @@ NAV = [
     ("/library", "만든 곡", "library_music"),
     ("/music-training", "음악 LoRA 학습", "graphic_eq"),
     ("/training", "가사 LoRA 학습", "model_training"),
+    ("/voice-models", "목소리 모델 학습", "mic"),
+    ("/vocal-convert", "보컬 변환", "record_voice_over"),
     ("/jobs", "작업", "pending_actions"),
     ("/settings", "설정·진단", "settings"),
 ]

@@ -163,7 +163,7 @@ def _ai_dialog(vm: LyricsBookViewModel) -> None:
         with ui.row().classes("w-full justify-end"):
             ui.button("취소", on_click=dialog.close).props("flat")
             ui.button("만들기", icon="auto_awesome",
-                      on_click=lambda: (vm.generate(form), dialog.close() if not vm.error else None))
+                      on_click=lambda: (vm.generate(form), dialog.close() if not vm.error else None)).mark("ai-lyrics-go")
     dialog.open()
 
 

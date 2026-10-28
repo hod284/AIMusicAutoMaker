@@ -19,6 +19,8 @@ class ModelsViewModel(BaseViewModel):
 
     engine: Engine = Engine.ACE
     kind_label = "음악 LoRA"
+    none_label = "LoRA 없이 기본 모델 사용"
+    use_hint = "'사용 중' 모델이 곡 만들기에서 이 카테고리를 고를 때 적용됩니다."
 
     models = ObservableProperty[list[ModelRecord]](factory=list)          # 전체 음악 LoRA
     categories = ObservableProperty[list[Category]](factory=list)
@@ -152,3 +154,10 @@ class MusicModelsViewModel(ModelsViewModel):
 class LyricsModelsViewModel(ModelsViewModel):
     engine = Engine.QWEN
     kind_label = "가사 LoRA"
+
+
+class VoiceModelsViewModel(ModelsViewModel):
+    engine = Engine.VOICE
+    kind_label = "목소리 모델"
+    none_label = "기본 선택 해제"
+    use_hint = "'사용 중' 모델이 [보컬 변환]에서 이 카테고리를 고를 때 먼저 골라집니다."

@@ -11,6 +11,7 @@ class StrEnum(str, Enum):
 class Engine(StrEnum):
     QWEN = "qwen"
     ACE = "ace"
+    VOICE = "voice"   # Seed-VC 목소리 모델
 
 
 class DatasetKind(StrEnum):
@@ -41,6 +42,8 @@ class JobKind(StrEnum):
     MUSIC_PREPROCESS = "music_preprocess"
     MUSIC_TRAIN = "music_train"
     FULL_SONG = "full_song"
+    VOICE_TRAIN = "voice_train"       # 목소리 모델 만들기 (Seed-VC 학습)
+    VOICE_CONVERT = "voice_convert"   # 만든 곡의 보컬을 목소리 모델로 바꾸기 (분리 → 변환 → 합치기)
 
     @property
     def is_gpu_heavy(self) -> bool:
@@ -56,6 +59,8 @@ _GPU_HEAVY = {
     JobKind.MUSIC_PREPROCESS,
     JobKind.MUSIC_TRAIN,
     JobKind.FULL_SONG,
+    JobKind.VOICE_TRAIN,
+    JobKind.VOICE_CONVERT,
 }
 
 

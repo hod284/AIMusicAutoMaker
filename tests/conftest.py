@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.adapters.ace.mock_adapter import MockMusicAdapter  # noqa: E402
 from app.adapters.mlx.mock_adapter import MockLyricsAdapter  # noqa: E402
+from app.adapters.voice.mock_adapter import MockVoiceAdapter  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 from app.core.singleton import SingletonMeta  # noqa: E402
 
@@ -35,6 +36,7 @@ def settings(tmp_path: Path) -> Settings:
         music_root=tmp_path, ace_root=ace, lyrics_root=tmp_path / "lyrics-ai",
         workspace_dir=tmp_path / "studio" / "workspace", data_dir=tmp_path / "studio" / "data",
         ace_poll_interval_s=0.01, ace_poll_timeout_s=5, music_engine="mock", lyrics_engine="mock",
+        voice_engine="mock", voice_root=tmp_path / "voice-ai",
     )
 
 
@@ -49,10 +51,15 @@ def lyrics() -> MockLyricsAdapter:
 
 
 @pytest.fixture
-def container(settings, music, lyrics):
+def voice() -> MockVoiceAdapter:
+    return MockVoiceAdapter()
+
+
+@pytest.fixture
+def container(settings, music, lyrics, voice):
     from app.core.container import ServiceContainer
 
-    return ServiceContainer(settings, music=music, lyrics=lyrics)
+    return ServiceContainer(settings, music=music, lyrics=lyrics, voice=voice)
 
 
 @pytest.fixture

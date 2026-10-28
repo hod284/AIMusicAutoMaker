@@ -9,6 +9,7 @@ from app.viewmodels.base import BaseViewModel
 class DashboardViewModel(BaseViewModel):
     ace_health = ObservableProperty[EngineHealth | None](None)
     qwen_health = ObservableProperty[EngineHealth | None](None)
+    voice_health = ObservableProperty[EngineHealth | None](None)
     jobs = ObservableProperty[list[Job]](factory=list)
     recent_songs = ObservableProperty[list[Song]](factory=list)
     gpu_holders = ObservableProperty[dict[str, str]](factory=dict)
@@ -36,6 +37,8 @@ class DashboardViewModel(BaseViewModel):
         health: EngineHealth = event.payload["health"]
         if health.engine == "ace":
             self.ace_health = health
+        elif health.engine == "voice":
+            self.voice_health = health
         else:
             self.qwen_health = health
 
@@ -43,6 +46,7 @@ class DashboardViewModel(BaseViewModel):
         async def _do() -> None:
             self.ace_health = await self.c.music_engine.health()
             self.qwen_health = await self.c.lyrics_engine.health()
+            self.voice_health = await self.c.voice_engine.health()
         await self.run_command(_do)
 
     async def cancel_job(self, job_id: str) -> None:

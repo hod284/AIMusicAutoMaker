@@ -186,6 +186,9 @@ class SettingsViewModel(BaseViewModel):
             ("작업 폴더", str(s.workspace_dir)), ("DB", str(s.db_path)),
             ("음악 엔진", f"{s.music_engine}{' (MOCK)' if self.c.music_engine.is_mock else ''}"),
             ("가사 엔진", f"{s.lyrics_engine}{' (MOCK)' if self.c.lyrics_engine.is_mock else ''}"),
+            ("목소리 엔진", f"{s.voice_engine}{' (MOCK)' if self.c.voice_engine.is_mock else ''}"),
+            ("voice-ai 경로", str(s.voice_root)), ("audio-separator", str(s.separator_bin)),
+            ("Seed-VC", str(s.seedvc_root)),
             ("GPU 동시 작업", str(s.gpu_heavy_concurrency)),
             ("ACE API 키", "설정됨" if s.ace_api_key else "없음"),
         ]
@@ -209,17 +212,35 @@ class TrainingViewModel(BaseViewModel):
     def __init__(self, container=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(container)
         self.svc = self.c.lyrics_datasets
+        self.form: dict[str, Any] = {"iters": 200, "batch_size": 1, "learning_rate": None, "num_layers": None,
+                                     "max_seq_length": None, "save_every": None}
         self.tracker = JobTracker(self, self._on_job, self._on_log)
         self._reload_datasets(select_latest=True)
         job = self.tracker.resume([JobKind.LYRICS_TRAIN])   # 다른 화면에 다녀와도 학습 진행 표시 유지
         if job and job.dataset_id:
             self.dataset_id = job.dataset_id
+        if job is not None and not job.status.is_terminal:  # 학습 중이면 시작할 때의 입력값을 그대로 보여 줌
+            cfg = job.params.get("config") or {}
+            self.form.update({k: cfg[k] for k in self.form if k in cfg})
+            self.model_title = cfg.get("model_name", "")
+            self.export_dir = cfg.get("export_dir", "")
 
     # --- 조회 ---
     @property
     def training(self) -> bool:
         """학습 작업이 실행 중인지. (BaseViewModel.busy 와 이름이 겹치지 않게 따로 둔다)"""
         return self.job is not None and not self.job.status.is_terminal
+
+    @property
+    def locked(self) -> bool:
+        """학습 중에는 화면의 모든 입력을 잠근다."""
+        return self.training
+
+    def _guard(self) -> bool:
+        if self.locked:
+            self.error = "가사 LoRA 학습 중입니다. 끝난 뒤에 할 수 있습니다."
+            return True
+        return False
 
     @property
     def dataset(self) -> Dataset | None:
@@ -250,12 +271,16 @@ class TrainingViewModel(BaseViewModel):
             self.dataset_id = self.datasets[-1].id if self.datasets else None
 
     def select_dataset(self, dataset_id: str | None) -> None:
+        if self._guard():
+            return
         self.dataset_id = dataset_id or None
 
     # --- ① 데이터셋: 가사 .txt ---
     MAX_TXT_BYTES = 200_000
 
     def add_txt(self, filename: str, data: bytes) -> None:
+        if self._guard():
+            return
         if not filename.lower().endswith(".txt"):
             self.error = f"{filename}: .txt 파일만 올릴 수 있습니다."
             return
@@ -271,9 +296,13 @@ class TrainingViewModel(BaseViewModel):
         self.txt_files = others + [(filename, text)]
 
     def remove_txt(self, filename: str) -> None:
+        if self._guard():
+            return
         self.txt_files = [(n, t) for n, t in self.txt_files if n != filename]
 
     def clear_txt(self) -> None:
+        if self._guard():
+            return
         self.txt_files = []
 
     def preview_txt(self, filename: str) -> str:
@@ -282,6 +311,8 @@ class TrainingViewModel(BaseViewModel):
         return f"[요청]\n{msgs.get('user', '')}\n\n[정답 가사]\n{msgs.get('assistant', '')}"
 
     def build_from_txt(self) -> None:
+        if self._guard():
+            return
         if len(self.txt_files) < 2:
             self.error = "가사 .txt 를 2개 이상 올리세요. (train/valid 로 나누려면 최소 2곡)"
             return
@@ -300,6 +331,8 @@ class TrainingViewModel(BaseViewModel):
         self.jsonl_report = report
 
     def build_dataset(self, text: str) -> bool:
+        if self._guard():
+            return False
         if not text.strip():
             self.error = "JSONL 을 올리거나 붙여 넣으세요."
             return False
@@ -315,7 +348,9 @@ class TrainingViewModel(BaseViewModel):
 
     # --- ② 학습 ---
 
-    def start_training(self, form: dict[str, Any]) -> None:
+    def start_training(self, form: dict[str, Any] | None = None) -> None:
+        form = self.form if form is None else form
+
         def _num(v: Any, cast: type) -> Any:
             return cast(v) if v not in (None, "") else None
         if self.training:

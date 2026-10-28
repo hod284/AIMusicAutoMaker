@@ -22,11 +22,30 @@ QWEN_ADAPTER_FILES = ("adapter_config.json",)
 QWEN_WEIGHT_CANDIDATES = ("adapters.safetensors", "adapter_model.safetensors")
 
 
+VOICE_REFERENCE = "reference.wav"     # 목소리 모델 폴더: 참고 녹음 (필수)
+VOICE_CHECKPOINT = "ft_model.pth"     # Seed-VC 학습 결과 (학습한 모델만)
+
+
+def voice_model_files(path: Path) -> tuple[Path, Path | None, Path | None]:
+    """(참고 녹음, 학습 체크포인트 또는 None, 설정 yml 또는 None)"""
+    path = Path(path)
+    ckpt = path / VOICE_CHECKPOINT
+    cfg = next(iter(sorted(path.glob("*.yml"))), None)
+    return path / VOICE_REFERENCE, (ckpt if ckpt.is_file() else None), cfg
+
+
 def validate_adapter_dir(engine: Engine, path: Path) -> tuple[bool, str]:
     """어댑터 폴더 구조 검사. (통과 여부, 메시지)"""
     path = Path(path)
     if not path.is_dir():
         return False, f"폴더가 없습니다: {path}"
+    if engine == Engine.VOICE:
+        ref, ckpt, cfg = voice_model_files(path)
+        if not ref.is_file():
+            return False, f"목소리 모델 참고 녹음({VOICE_REFERENCE})이 없습니다."
+        if ckpt is not None and cfg is None:
+            return False, "학습한 목소리 모델의 설정 파일(yml)이 없습니다."
+        return True, "학습한 목소리 모델 (Seed-VC)" if ckpt else "참고 녹음만 쓰는 목소리 (학습 없음)"
     if engine == Engine.ACE:
         missing = [f for f in ACE_ADAPTER_FILES if not (path / f).is_file()]
         if missing:

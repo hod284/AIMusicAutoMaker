@@ -34,6 +34,7 @@ async def dashboard_page() -> None:
             with ui.row().classes("w-full gap-4"):
                 _engine_card("ACE-Step (음악)", vm.ace_health)
                 _engine_card("Qwen / MLX-LM (가사)", vm.qwen_health)
+                _engine_card("보컬 분리 · Seed-VC (목소리)", vm.voice_health)
                 with ui.card().classes("min-w-[200px]"):
                     ui.label("GPU 작업 슬롯").classes("font-bold")
                     if vm.gpu_holders:
@@ -44,7 +45,7 @@ async def dashboard_page() -> None:
                     ui.label(f"카테고리 {vm.category_count}개").classes("text-xs text-gray-500")
 
         engines()
-        scope.refresh_on(engines, "ace_health", "qwen_health", "gpu_holders", "category_count")
+        scope.refresh_on(engines, "ace_health", "qwen_health", "voice_health", "gpu_holders", "category_count")
         ui.button("엔진 상태 새로고침", icon="refresh", on_click=vm.refresh_health).props("outline")
 
         with section("최근 작업", "학습/생성은 별도 프로세스에서 계속 진행되며, 화면을 닫아도 중단되지 않습니다."):

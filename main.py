@@ -24,6 +24,7 @@ from app.views import (  # noqa: F401
     lyrics_book_view,
     music_training_view,
     other_views,
+    voice_view,
 )
 
 settings = get_settings()
