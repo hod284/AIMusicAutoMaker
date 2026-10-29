@@ -44,40 +44,69 @@ def start(command: list[str], cwd: Path, log: Path, env: dict[str, str]) -> subp
                                 stdout=stream, stderr=stream, start_new_session=True)
 
 
-def restart_studio(host: str, port: int, db_path: Path) -> None:
+def active_jobs(db_path: Path) -> int:
+    if not db_path.is_file():
+        return 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        return conn.execute("SELECT count(*) FROM jobs WHERE status NOT IN "
+                            "('succeeded','failed','cancelled')").fetchone()[0]
+
+
+def stop_service(name: str, host: str, port: int, expected_cwd: Path, marker: str, db_path: Path,
+                 wait_s: float = 20) -> bool:
+    """포트를 쓰는 프로그램이 정말 그 서비스인지(실행 폴더·명령) 확인한 뒤에만 끈다. 끈 경우 True."""
     if not port_busy(host, port):
-        return
+        return False
     result = subprocess.run(["/usr/sbin/lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
                             capture_output=True, text=True, check=False)
     pids = set(result.stdout.split())
     if len(pids) != 1:
-        raise RuntimeError("Studio 프로세스를 확인하지 못했습니다. 자동 종료하지 않습니다.")
+        raise RuntimeError(f"{name} 프로세스를 확인하지 못했습니다. 자동 종료하지 않습니다.")
     pid = int(next(iter(pids)))
     cwd = subprocess.run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
                          capture_output=True, text=True, check=False)
     command = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "command="],
                              capture_output=True, text=True, check=False)
-    if f"n{ROOT}" not in cwd.stdout.splitlines() or "main.py" not in command.stdout:
-        raise RuntimeError("해당 포트의 프로그램이 Studio인지 확인되지 않아 종료하지 않습니다.")
-    if db_path.is_file():
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-            active = conn.execute("SELECT count(*) FROM jobs WHERE status NOT IN "
-                                  "('succeeded','failed','cancelled')").fetchone()[0]
-        if active:
-            raise RuntimeError("진행 중인 작업이 있습니다. 작업이 끝난 뒤 재시작하세요.")
-    print("기존 Studio를 종료하고 다시 시작합니다…", flush=True)
+    if f"n{expected_cwd}" not in cwd.stdout.splitlines() or marker not in command.stdout:
+        raise RuntimeError(f"포트 {port}의 프로그램이 {name}인지 확인되지 않아 종료하지 않습니다.")
+    if active_jobs(db_path):
+        raise RuntimeError("진행 중인 작업이 있습니다. 작업이 끝난 뒤 다시 하세요.")
+    print(f"{name}을(를) 종료합니다…", flush=True)
     os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + wait_s
     while port_busy(host, port):
         if time.monotonic() > deadline:
-            raise RuntimeError("기존 Studio가 아직 종료되지 않았습니다. 잠시 후 다시 실행하세요.")
+            print(f"{name}이(가) 응답하지 않아 강제 종료합니다.", flush=True)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            time.sleep(1)
+            break
         time.sleep(0.25)
+    return True
+
+
+def restart_studio(host: str, port: int, db_path: Path) -> None:
+    if stop_service("Studio", host, port, ROOT, "main.py", db_path):
+        print("Studio를 다시 시작합니다…", flush=True)
+
+
+def stop_ace(settings) -> bool:  # type: ignore[no-untyped-def]
+    address = urlsplit(settings.ace_base_url)
+    if address.hostname not in {"127.0.0.1", "localhost"}:
+        return False
+    return stop_service("음악 엔진(ACE)", address.hostname, address.port or 80, Path(settings.ace_root),
+                        "acestep", settings.db_path, wait_s=30)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-browser", action="store_true")
-    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--restart", action="store_true", help="Studio 만 껐다 켜기")
+    parser.add_argument("--restart-ace", action="store_true",
+                        help="음악 엔진(ACE)도 껐다 켜기 (출력이 data/launcher/ace.log 에 남음)")
+    parser.add_argument("--stop", action="store_true", help="Studio 와 음악 엔진(ACE) 끄기")
     parser.add_argument("--check", action="store_true", help="설정과 현재 실행 상태만 확인")
     args = parser.parse_args()
     settings = get_settings()
@@ -95,8 +124,15 @@ def main() -> None:
     with (logs / "launch.lock").open("a") as lock:
         # Serialise double clicks without interrupting any running service.
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if args.restart:
+        if args.stop:
+            stopped = stop_service("Studio", browser_host, settings.ui_port, ROOT, "main.py", settings.db_path)
+            stopped = stop_ace(settings) or stopped
+            print("모두 종료했습니다." if stopped else "실행 중인 Studio·음악 엔진이 없습니다.", flush=True)
+            return
+        if args.restart or args.restart_ace:
             restart_studio(browser_host, settings.ui_port, settings.db_path)
+        if args.restart_ace and stop_ace(settings):
+            print("음악 엔진(ACE)을 다시 시작합니다…", flush=True)
         env = settings.ace_subprocess_env()
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
         ace_process = None

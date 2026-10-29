@@ -164,3 +164,22 @@ async def test_missing_task_id_is_error():
     with pytest.raises(EngineResponseError):
         await ace.submit_generation(MusicGenerationRequest(prompt="abc", lyrics="y"))
     await ace.aclose()
+
+
+async def test_lora_calls_use_long_timeout():
+    """LoRA 올리기/내리기는 오래 걸릴 수 있어 일반 요청(30초)보다 길게 기다린다."""
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/openapi.json":
+            return httpx.Response(200, json={"openapi": "3.1.0", "paths": {
+                "/v1/lora/unload": {"post": {}}, "/v1/lora/status": {"get": {}}}})
+        seen[request.url.path] = request.extensions["timeout"]["read"]
+        return httpx.Response(200, json=envelope({"loaded": False}))
+
+    ace = make_adapter(handler)
+    await ace.capabilities(refresh=True)
+    await ace.unload_lora()
+    assert seen["/v1/lora/unload"] == AceRestAdapter.LORA_TIMEOUT_S
+    assert seen["/v1/lora/status"] < AceRestAdapter.LORA_TIMEOUT_S
+    await ace.aclose()

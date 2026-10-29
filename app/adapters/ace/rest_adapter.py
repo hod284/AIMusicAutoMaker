@@ -251,14 +251,18 @@ class AceRestAdapter(MusicEnginePort):
 
     # ------------------------------------------------------------------
     # LoRA: 문서에 라우트가 없으므로 바인딩이 채워져야만 동작한다.
+    # LoRA 올리기/내리기는 음악 모델 가중치를 GPU 에서 다시 옮기는 작업이라, 메모리가 빠듯하면(다른 AI 작업 직후 등)
+    # 수십 초 이상 걸릴 수 있다. 일반 요청(30초)보다 넉넉하게 기다린다.
+    LORA_TIMEOUT_S = 300.0
+
     async def load_lora(self, adapter_path: Path) -> LoraStatus:
         payload, _ = self.registry.build_payload("lora_load", {"adapter_path": str(adapter_path)})
-        data = await self._call("lora_load", payload)
+        data = await self._call("lora_load", payload, timeout=self.LORA_TIMEOUT_S)
         status = await self._status_after(data)
         # 로드는 됐지만 '사용' 이 꺼져 있으면 toggle 로 켠다 (설치본에 /v1/lora/toggle 존재)
         if status.enabled is False and self.registry.report.is_usable("lora_toggle"):
             toggle, _ = self.registry.build_payload("lora_toggle", {"use_lora": True})
-            await self._call("lora_toggle", toggle)
+            await self._call("lora_toggle", toggle, timeout=self.LORA_TIMEOUT_S)
             status = await self._status_after(data)
         status.adapter_path = status.adapter_path or str(adapter_path)
         return status
@@ -268,7 +272,7 @@ class AceRestAdapter(MusicEnginePort):
         payload: dict[str, Any] | None = None
         if binding.method.upper() != "GET":
             payload, _ = self.registry.build_payload("lora_unload", {})
-        data = await self._call("lora_unload", payload)
+        data = await self._call("lora_unload", payload, timeout=self.LORA_TIMEOUT_S)
         return await self._status_after(data)
 
     async def lora_status(self) -> LoraStatus:
