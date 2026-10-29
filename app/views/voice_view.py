@@ -239,26 +239,34 @@ def _convert_tab(vm: VoiceConvertViewModel) -> None:
                 with rvc_box:
                     ui.label("다운로드한 RVC 모델(.pth)을 넣으세요. 함께 제공된 .index 파일이 있으면 추가할 수 있습니다.") \
                         .classes("text-xs text-gray-500")
-                    async def on_rvc(e) -> None:
-                        vm.upload_rvc(e.file.name, await e.file.read())
-                    lock(ui.upload(label="RVC 모델 넣기 (.pth)", auto_upload=True, on_upload=on_rvc,
-                                   max_file_size=vm.max_upload_bytes).props("accept=.pth").classes("w-full")
-                         .mark("upload-rvc-model"))
-                    lock(ui.upload(label="RVC 인덱스 넣기 (.index, 선택)", auto_upload=True, on_upload=on_rvc,
-                                   max_file_size=vm.max_upload_bytes).props("accept=.index").classes("w-full")
-                         .mark("upload-rvc-index"))
-                    ui.label("업로드한 파일 중 선택").classes("text-sm font-bold mt-2")
-                    ui.label("위에서 파일을 올리면 자동으로 선택됩니다. 다시 사용할 때는 아래 목록에서 고르세요.") \
-                        .classes("text-xs text-gray-500")
+                    async def on_rvc_model(e) -> None:
+                        if not e.file.name.lower().endswith(".pth"):
+                            vm.error = "RVC 모델은 .pth 파일을 올리세요."
+                        else:
+                            vm.upload_rvc(e.file.name, await e.file.read())
+                        model_upload.reset()
+
+                    async def on_rvc_index(e) -> None:
+                        if not e.file.name.lower().endswith(".index"):
+                            vm.error = "인덱스는 .index 파일을 올리세요."
+                        else:
+                            vm.upload_rvc(e.file.name, await e.file.read())
+                        index_upload.reset()
+
+                    model_upload = lock(ui.upload(label="RVC 모델 넣기 (.pth)", auto_upload=True,
+                        on_upload=on_rvc_model, max_files=1, max_file_size=vm.max_upload_bytes)
+                        .props("accept=.pth").classes("w-full").mark("upload-rvc-model"))
+                    index_upload = lock(ui.upload(label="RVC 인덱스 넣기 (.index, 선택)", auto_upload=True,
+                        on_upload=on_rvc_index, max_files=1, max_file_size=vm.max_upload_bytes)
+                        .props("accept=.index").classes("w-full").mark("upload-rvc-index"))
                     @ui.refreshable
-                    def rvc_picker() -> None:
-                        ui.select({n: vm.label(n) for n in vm.rvc_models}, label="업로드한 모델 중 선택 (.pth) *") \
-                            .bind_value(vm, "rvc_model").classes("w-full").set_enabled(not vm.locked)
-                        ui.select({"": "사용 안 함"} | {n: vm.label(n) for n in vm.rvc_indexes},
-                                  label="업로드한 인덱스 중 선택 (.index, 선택 사항)") \
-                            .bind_value(vm, "rvc_index").classes("w-full").set_enabled(not vm.locked)
-                    rvc_picker()
-                    scope.refresh_on(rvc_picker, "rvc_models", "rvc_indexes", "job")
+                    def rvc_files() -> None:
+                        ui.label("모델: " + (vm.label(vm.rvc_model) if vm.rvc_model else "파일을 올리세요"))
+                        ui.label("인덱스: " + (vm.label(vm.rvc_index) if vm.rvc_index else "없음 (선택 사항)"))
+                    rvc_files()
+                    scope.refresh_on(rvc_files, "rvc_model", "rvc_index")
+                    ui.label("올린 파일로 바로 변환하며, 완료되면 업로드한 복사본과 입력을 비웁니다.") \
+                        .classes("text-xs text-gray-500")
                     lock(ui.number("인덱스 반영 비율", min=0, max=1, step=0.1)
                          .bind_value(vm, "rvc_index_rate").classes("w-48"))
 

@@ -369,3 +369,47 @@ def test_last_error_picks_exception_line():
             '  File "inference.py", line 329, in main', "TypeError: Cannot convert a MPS Tensor to float64 dtype."]
     assert last_error(tail).startswith("TypeError: Cannot convert")
     assert last_error(["loading", "done"]) == "done"
+
+
+async def test_local_matches_vocal_loudness_before_mixing(local, tmp_path):
+    reference = write_tone(tmp_path / 'reference.wav', 4.0, freq=300, sr=44100)
+    quiet = tmp_path / 'quiet.wav'
+    code, _ = await local._run(local.ffmpeg, ['-v', 'error', '-i', str(reference), '-af',
+                                             'volume=0.25', str(quiet)], None, None)
+    assert code == 0
+    before = await local.vocal_loudness(quiet)
+    original = await local.vocal_loudness(reference)
+    assert original - before == pytest.approx(12.0, abs=0.3)
+    logs = []
+    result = await local.match_vocal_level(reference, quiet, logs.append)
+    assert result == quiet
+    assert await local.vocal_loudness(result) == pytest.approx(original, abs=0.3)
+    assert any('보정 +12.' in line for line in logs)
+    assert wav_seconds(result) == pytest.approx(wav_seconds(reference), abs=0.001)
+
+
+async def test_local_silent_converted_vocal_is_rejected(local, tmp_path):
+    reference = write_tone(tmp_path / 'reference.wav', 3.0)
+    silent = tmp_path / 'silent.wav'
+    code, _ = await local._run(local.ffmpeg, ['-v', 'error', '-i', str(reference), '-af',
+                                             'volume=0', str(silent)], None, None)
+    assert code == 0
+    from app.core.errors import EngineResponseError
+    with pytest.raises(EngineResponseError, match='무음'):
+        await local.match_vocal_level(reference, silent, lambda _: None)
+    assert await local.match_vocal_level(silent, reference, lambda _: None) == reference
+
+
+@pytest.mark.parametrize("title", ["ㅌㅌㅌ", "ㄴㅇㄹㅎ", "허스키 ㅋㅋ", "허스키"])
+async def test_convert_preserves_hangul_titles_in_filenames(container, tmp_path, title):
+    import unicodedata
+    src = container.voice.store_input("song.wav", _wav_bytes(tmp_path))
+    ref = container.voice.store_input("reference.wav", _wav_bytes(tmp_path))
+    params = dict(source="file", source_file=src.name, voice="reference", reference_file=ref.name,
+                  title=title, audio_format="wav")
+    done = await container.jobs.wait(container.jobs.submit(JobKind.VOICE_CONVERT, params).id, timeout=10)
+    assert done.status == JobStatus.SUCCEEDED, done.error
+    expected = unicodedata.normalize("NFC", title).replace(" ", "_")
+    assert Path(done.result["path"]).name == expected + ".wav"
+    song = container.song_repo.get(done.result["song_ids"][0])
+    assert song.title == title

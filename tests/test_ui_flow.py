@@ -242,19 +242,14 @@ async def test_music_training_page_step_buttons_follow_dataset_state(user: User)
                        "step-music_train": False}                       # 라벨링까지 했으면 전처리까지 열림
 
 
-async def test_rvc_option_selects_saved_model(user: User) -> None:
-    from app.core.container import ServiceContainer
-    c = ServiceContainer()
+async def test_rvc_option_has_uploads_without_saved_model_lists(user: User) -> None:
     await user.open('/vocal-convert')
     toggle = next(e for e in user.find(ui.toggle).elements if 'rvc' in e.options)
     toggle.set_value('rvc')
     await user.should_see('RVC 모델 넣기 (.pth)')
-    c.voice.store_rvc('singer.pth', b'model')
-    await user.open('/vocal-convert')
-    toggle = next(e for e in user.find(ui.toggle).elements if 'rvc' in e.options)
-    toggle.set_value('rvc')
-    picker = _el(user, ui.select, '업로드한 모델 중 선택 (.pth) *')
-    assert any('singer.pth' in n for n in picker.options)
-    picker.set_value(next(iter(picker.options)))
-    await asyncio.sleep(0.2)  # NiceGUI's visibility binding propagation.
-    await user.should_not_see("변환 스텝")
+    await user.should_see('RVC 인덱스 넣기 (.index, 선택)')
+    await user.should_not_see('업로드한 파일 중 선택')
+    await asyncio.sleep(0.2)
+    labels = {e.props.get('label', '') for e in user.find(ui.select).elements}
+    assert not any('업로드한' in label or 'RVC 모델' in label for label in labels)
+    await user.should_not_see('변환 스텝')

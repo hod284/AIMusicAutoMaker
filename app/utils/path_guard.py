@@ -13,7 +13,7 @@ from pathlib import Path
 
 from app.core.errors import PathSecurityError
 
-_SAFE_CHARS = re.compile(r"[^0-9A-Za-z가-힣._-]+")
+_SAFE_CHARS = re.compile(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ\u1100-\u11ff\ua960-\ua97f\ud7b0-\ud7ff._-]+")
 
 
 def safe_filename(name: str, max_len: int = 120) -> str:

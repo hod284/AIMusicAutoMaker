@@ -27,10 +27,24 @@ async def test_rvc_uploaded_model_conversion(container, tmp_path, voice):
     song = container.song_repo.get(done.result['song_ids'][0])
     assert song.generation['voice']['backend'] == 'rvc'
     assert song.generation['voice']['base_model'] is False
-    again = VoiceConvertViewModel(container)
-    assert vm.rvc_model in again.rvc_models and vm.rvc_index in again.rvc_indexes
-    again.upload_rvc('other.pth', b'other')
-    assert again.rvc_index is None  # Never silently reuse another model's index.
+    assert vm.rvc_model is None and vm.rvc_index is None
+    assert not spec.checkpoint.exists() and not spec.index.exists()
+    assert VoiceConvertViewModel(container).rvc_model is None
+
+
+def test_rvc_upload_replaces_one_file_per_slot(container):
+    vm = VoiceConvertViewModel(container)
+    vm.upload_rvc('one.pth', b'one')
+    previous = container.voice.rvc_path(vm.rvc_model, '.pth')
+    vm.upload_rvc('one.index', b'index')
+    index = vm.rvc_index
+    vm.upload_rvc('two.pth', b'two')
+    assert not previous.exists()
+    assert vm.rvc_index == index
+    assert len(list(container.voice.rvc_dir().glob('*.pth'))) == 1
+    vm.upload_rvc('two.index', b'new index')
+    assert not (container.voice.rvc_dir() / index).exists()
+    assert len(list(container.voice.rvc_dir().glob('*.index'))) == 1
 
 
 def test_rvc_upload_validation(container):

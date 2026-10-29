@@ -145,7 +145,9 @@ class MlxProcessAdapter(LyricsEnginePort):
         except EngineUnavailableError as exc:
             return EngineHealth(engine="qwen", ok=False, message=exc.user_message, details={"python": str(self.python_exe)})
         if code != 0:
-            return EngineHealth(engine="qwen", ok=False, message="mlx_lm import 실패", details={"stderr": err[-500:]})
+            message = ("맥 GPU 접근 실패 — Studio_재시작.command로 재시작하세요"
+                       if "No Metal device available" in err else "mlx_lm import 실패")
+            return EngineHealth(engine="qwen", ok=False, message=message, details={"stderr": err[-500:]})
         return EngineHealth(engine="qwen", ok=True, message="MLX-LM 사용 가능", version=out.strip(),
                             details={"model": self.base_model, "python": str(self.python_exe)})
 

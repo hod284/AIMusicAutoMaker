@@ -177,8 +177,6 @@ class VoiceConvertViewModel(_VoiceJobVM):
     rvc_model = ObservableProperty[str | None](None)
     rvc_index = ObservableProperty[str | None](None)
     rvc_index_rate = ObservableProperty(0.3)
-    rvc_models = ObservableProperty[list[str]](factory=list)
-    rvc_indexes = ObservableProperty[list[str]](factory=list)
     reference_separate = ObservableProperty(False)
     # ③ 설정·저장
     semi_tone_shift = ObservableProperty(0)
@@ -200,7 +198,6 @@ class VoiceConvertViewModel(_VoiceJobVM):
         self.listen(Topics.SONG_CREATED, lambda e: self.load_songs())
         self.load_models()
         self.load_songs()
-        self.reload_rvc()
         job = self.tracker.resume([JobKind.VOICE_CONVERT], recent_minutes=0)
         if job is not None and not job.status.is_terminal:     # 실행 중이면 누르기 직전 화면 그대로
             for key in self._FIELDS:
@@ -292,21 +289,17 @@ class VoiceConvertViewModel(_VoiceJobVM):
             return
         self.model_id = model_id or None
 
-    def reload_rvc(self) -> None:
-        self.rvc_models = self.c.voice.rvc_files(".pth")
-        self.rvc_indexes = self.c.voice.rvc_files(".index")
-
     def upload_rvc(self, filename: str, data: bytes) -> None:
         if self._guard():
             return
         path = self.sync_command(lambda: self.c.voice.store_rvc(filename, data))
         if path:
             if path.suffix == ".pth":
+                self.c.voice.remove_rvc(self.rvc_model)
                 self.rvc_model = path.name
-                self.rvc_index = None
             else:
+                self.c.voice.remove_rvc(self.rvc_index)
                 self.rvc_index = path.name
-            self.reload_rvc()
             self.voice = "rvc"
 
     def upload_reference(self, filename: str, data: bytes) -> None:
@@ -355,4 +348,7 @@ class VoiceConvertViewModel(_VoiceJobVM):
             self.results = [s for sid in job.result.get("song_ids", []) if (s := self.c.song_repo.get(sid))] \
                 + self.results
             self.title = ""
+            if job.params.get("voice") == "rvc":
+                self.rvc_model = self.rvc_index = None
+                self.rvc_index_rate = 0.3
             self.info = f"보컬 변환 완료 → {job.result.get('path', '')}  (만든 곡 목록에도 있습니다)"

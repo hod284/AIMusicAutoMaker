@@ -215,7 +215,8 @@ class LocalVoiceAdapter(VoiceEnginePort):
     # --- 변환 (Seed-VC inference.py) ---
     async def convert(self, spec: VoiceConvertSpec, log: LogFn) -> Path:
         if spec.backend == "rvc":
-            return await self._convert_rvc(spec, log)
+            converted = await self._convert_rvc(spec, log)
+            return await self.match_vocal_level(spec.source, converted, log)
         if spec.reference is None:
             raise ValidationError("Seed-VC 참고 녹음이 없습니다.")
         self._need(self.seedvc_python, "Seed-VC 가상환경 python")
@@ -237,7 +238,52 @@ class LocalVoiceAdapter(VoiceEnginePort):
         results = sorted(out.glob("vc_*.wav"), key=lambda p: p.stat().st_mtime)
         if not results:
             raise EngineResponseError("변환 결과(vc_*.wav)를 찾지 못했습니다.", detail="\n".join(tail[-10:]))
-        return results[-1]
+        return await self.match_vocal_level(spec.source, results[-1], log)
+
+    async def vocal_loudness(self, path: Path) -> float:
+        """Measure gated loudness in the same stereo layout used by mix()."""
+        args = ["-hide_banner", "-nostdin", "-nostats", "-i", str(path), "-vn", "-af",
+                "aresample=44100,aformat=channel_layouts=stereo,"
+                "ebur128=peak=true:framelog=verbose", "-f", "null", "-"]
+        code, tail = await self._run(self.ffmpeg, args, None, None, timeout=600)
+        values = re.findall(r"\bI:\s*(-?\d+(?:\.\d+)?)\s+LUFS", "\n".join(tail))
+        if code != 0 or not values:
+            raise EngineResponseError("보컬 음량 측정 실패", detail="\n".join(tail[-15:]))
+        return float(values[-1])
+
+    async def match_vocal_level(self, reference: Path, converted: Path, log: LogFn) -> Path:
+        """Restore source vocal loudness with one gain; never normalize the backing track.
+
+        Gating excludes pauses. A fixed gain preserves the converted performance's
+        dynamics; the limiter catches peaks only, with automatic gain disabled.
+        """
+        original_i = await self.vocal_loudness(reference)
+        converted_i = await self.vocal_loudness(converted)
+        if original_i <= -60:
+            log("원본 보컬이 무음에 가까워 음량 보정을 생략합니다.")
+            return converted
+        if converted_i <= -60:
+            raise EngineResponseError("변환된 보컬이 무음에 가깝습니다. 목소리 모델과 원본을 확인하세요.")
+        requested = original_i - converted_i
+        gain = max(-18.0, min(18.0, requested))
+        log(f"보컬 음량 맞춤: 원본 {original_i:.1f} LUFS → 변환 {converted_i:.1f} LUFS, 보정 {gain:+.1f} dB")
+        if abs(requested - gain) > 0.1:
+            log("보컬 음량 차이가 커서 보정 폭을 ±18 dB로 제한했습니다.")
+        if abs(gain) < 0.25:
+            return converted
+        adjusted = converted.with_name(converted.stem + "_level_matched.wav")
+        args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-n", "-i", str(converted), "-vn",
+                "-af", "aresample=44100,aformat=channel_layouts=stereo,"
+                f"volume={gain:.4f}dB,alimiter=limit=0.97:level=false:latency=true",
+                "-c:a", "pcm_s16le", str(adjusted)]
+        try:
+            code, tail = await self._run(self.ffmpeg, args, None, None, timeout=600)
+            if code != 0 or not adjusted.is_file():
+                raise EngineResponseError("보컬 음량 보정 실패", detail="\n".join(tail[-15:]))
+            adjusted.replace(converted)
+        finally:
+            adjusted.unlink(missing_ok=True)
+        return converted
 
     def validate_rvc(self) -> None:
         if self.applio_root is None or self.applio_python is None:

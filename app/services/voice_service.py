@@ -145,8 +145,11 @@ class VoiceService:
     def rvc_dir(self) -> Path:
         return self._dir("rvc")
 
-    def rvc_files(self, ext: str) -> list[str]:
-        return sorted(p.name for p in self.rvc_dir().glob(f"*{ext}") if p.is_file())
+    def remove_rvc(self, name: str | None) -> None:
+        if name:
+            path = self.guard.child(self.rvc_dir(), safe_filename(name))
+            if path.suffix in {".pth", ".index"}:
+                path.unlink(missing_ok=True)
 
     def store_rvc(self, filename: str, data: bytes) -> Path:
         name = safe_filename(filename)
@@ -490,6 +493,9 @@ class VoiceConvertHandler(JobHandler):
         }
         self.svc.songs.add(new)
         self.svc.bus.publish(Topics.SONG_CREATED, song=new)
+        if cfg.voice == "rvc":
+            self.svc.remove_rvc(cfg.rvc_model)
+            self.svc.remove_rvc(cfg.rvc_index)
         ctx.log(f"저장: {dest}  (원곡은 그대로)")
         return {"song_ids": [new.id], "path": str(dest), "stems_dir": str(stems)}
 
