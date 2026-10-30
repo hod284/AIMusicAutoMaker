@@ -413,3 +413,4 @@ async def test_convert_preserves_hangul_titles_in_filenames(container, tmp_path,
     assert Path(done.result["path"]).name == expected + ".wav"
     song = container.song_repo.get(done.result["song_ids"][0])
     assert song.title == title
+
