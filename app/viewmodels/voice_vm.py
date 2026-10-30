@@ -176,7 +176,7 @@ class VoiceConvertViewModel(_VoiceJobVM):
     reference_file = ObservableProperty[str | None](None)
     rvc_model = ObservableProperty[str | None](None)
     rvc_index = ObservableProperty[str | None](None)
-    rvc_index_rate = ObservableProperty(0.3)
+    rvc_index_rate = ObservableProperty(0.75)
     reference_separate = ObservableProperty(False)
     # ③ 설정·저장
     semi_tone_shift = ObservableProperty(0)
@@ -350,5 +350,5 @@ class VoiceConvertViewModel(_VoiceJobVM):
             self.title = ""
             if job.params.get("voice") == "rvc":
                 self.rvc_model = self.rvc_index = None
-                self.rvc_index_rate = 0.3
+                self.rvc_index_rate = 0.75
             self.info = f"보컬 변환 완료 → {job.result.get('path', '')}  (만든 곡 목록에도 있습니다)"

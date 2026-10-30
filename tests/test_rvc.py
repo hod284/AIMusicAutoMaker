@@ -85,7 +85,7 @@ def run_infer_script(pitch, index_rate, volume_envelope, protect, f0_method,
     assert Path.cwd().name == 'Applio'
     assert Path(pth_path).read_bytes() == b'model'
     assert pitch == -12 and f0_method == 'rmvpe' and export_format == 'WAV'
-    assert index_rate == (0.3 if index_path else 0.0)
+    assert index_rate == (0.75 if index_path else 0.0)
     if index_path:
         assert Path(index_path).read_bytes() == b'index'
     shutil.copy2(input_path, output_path)

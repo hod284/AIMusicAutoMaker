@@ -265,7 +265,7 @@ class VoiceConvertSpec(BaseModel):
     reference: Path | None = None    # Seed-VC 목표 목소리 참고 녹음
     backend: str = "seed-vc"          # seed-vc | rvc
     index: Path | None = None
-    index_rate: float = 0.3
+    index_rate: float = 0.75
     output_dir: Path
     checkpoint: Path | None = None   # 학습한 목소리 모델 (없으면 Seed-VC 기본 노래 모델 + 참고 녹음만)
     config: Path | None = None

@@ -14,7 +14,7 @@ def main() -> None:
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--index", default="")
     parser.add_argument("--pitch", type=int, default=0)
-    parser.add_argument("--index-rate", type=float, default=0.3)
+    parser.add_argument("--index-rate", type=float, default=0.75)
     args = parser.parse_args()
     root = Path(args.root).resolve()
     os.chdir(root)

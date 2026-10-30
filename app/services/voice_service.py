@@ -68,7 +68,7 @@ class VoiceConvertConfig(BaseModel):
     reference_file: str | None = None     # inputs/ 안의 참고 목소리 파일 이름
     rvc_model: str | None = None
     rvc_index: str | None = None
-    rvc_index_rate: float = Field(default=0.3, ge=0, le=1)
+    rvc_index_rate: float = Field(default=0.75, ge=0, le=1)
     reference_separate: bool = False      # 참고 녹음에 반주가 있으면 보컬만 뽑아서 쓴다
     semi_tone_shift: int = Field(default=0, ge=-24, le=24)
     diffusion_steps: int = Field(default=30, ge=10, le=100)

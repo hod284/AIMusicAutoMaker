@@ -1,7 +1,0 @@
-===== 2026-10-30 00:41:08 --restart-ace =====
-음악 엔진을 시작합니다. 첫 실행은 모델을 읽는 데 시간이 걸릴 수 있어요.
-Studio를 시작합니다…
-Studio 준비 완료: http://127.0.0.1:8080
-음악 엔진은 백그라운드에서 준비됩니다. 로그: /Users/jeong-yunsu/AI-Music-Studio/studio/data/launcher/ace.log
-이 터미널 창을 닫아도 Studio는 계속 실행됩니다.
-(종료 코드 0)
