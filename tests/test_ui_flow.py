@@ -67,7 +67,7 @@ async def test_pages_render(user: User) -> None:
 
 
 async def test_lyrics_book_then_full_song_flow(user: User) -> None:
-    """가사집에서 AI 작사 → 곡 만들기에서 가사 고르기 → 프롬프트 → 음악 생성 → 만든 곡."""
+    """가사집에서 AI 작사 → 곡 만들기에서 가사 고르기 → (음악 설명은 비워 둠) 음악 생성 → 만든 곡."""
     await user.open("/lyrics")
     user.find("AI로 가사 만들기").click()
     _el(user, ui.input, "주제 *").set_value("비 오는 밤의 그리움")
@@ -81,8 +81,7 @@ async def test_lyrics_book_then_full_song_flow(user: User) -> None:
     _click_item(user, draft.title or "무제")
     await _wait_for(user, draft.lyrics.splitlines()[0])
 
-    user.find(marker="gen-prompt").click()
-    await _wait_for(user, "음악 프롬프트 생성 완료")
+    await user.should_not_see("AI 프롬프트 생성")      # 음악 설명은 ACE LM 이 씀 (Qwen 디렉터 버튼 없음)
 
     user.find(marker="gen-music").click()
     await _wait_for(user, "음원 1개 생성 완료")

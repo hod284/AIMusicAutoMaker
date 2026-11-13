@@ -50,7 +50,7 @@ class MusicGenerationSpec(BaseModel):
     seed: int | None = None
     audio_format: str = "mp3"
     batch_size: int = Field(default=1, ge=1, le=8)
-    inference_steps: int | None = None
+    inference_steps: int | None = Field(default=None, ge=1, le=200)   # None = 음악 모델이 허용하는 최대값
     extra: dict[str, Any] = Field(default_factory=dict)
     prompt_meta: dict[str, Any] = Field(default_factory=dict)  # 디렉터 출처/보정 기록
 
@@ -175,11 +175,14 @@ class MusicService:
         request = MusicGenerationRequest(
             prompt=spec.prompt, lyrics=lyrics, vocal_language=spec.vocal_language, audio_format=spec.audio_format,
             audio_duration=spec.audio_duration, bpm=spec.bpm, seed=spec.seed, batch_size=spec.batch_size,
-            inference_steps=spec.inference_steps, extra=spec.extra,
+            inference_steps=spec.inference_steps, thinking=True, extra=spec.extra,
         )
         started = utcnow()
         async with self.lock.music_engine():
             lora_info = await self.apply_lora(model, log_fn)
+            if request.inference_steps is None:
+                request.inference_steps = await self._max_inference_steps()
+            log_fn(f"생성 설정: thinking=on, 생성 단계={request.inference_steps}")
             task_id = await self.engine.submit_generation(request)
             log_fn(f"ACE 작업 등록: task_id={task_id}")
             result = await self.poll(task_id, log_fn, on_tick)
@@ -235,6 +238,27 @@ class MusicService:
         if not isinstance(data, dict) or "models" not in data:
             return None
         return any(isinstance(m, dict) and m.get("is_loaded") for m in data.get("models") or [])
+
+    # ACE Gradio 설정과 같은 기준: turbo 계열 최대 20단계, 그 밖(base/SFT) 최대 200단계
+    TURBO_MAX_STEPS = 20
+    BASE_MAX_STEPS = 200
+
+    async def _max_inference_steps(self) -> int:
+        """ACE 기본 음악 모델(DiT) 이름을 보고 그 모델이 허용하는 최대 생성 단계를 고른다.
+        모델 이름을 알 수 없으면 turbo 기준(20)을 쓴다 — base 기준 200을 turbo 에 보내면 안 되므로 안전한 쪽."""
+        try:
+            data = await self.engine.invoke("models")
+        except Exception:  # noqa: BLE001
+            return self.TURBO_MAX_STEPS
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if not isinstance(data, dict):
+            return self.TURBO_MAX_STEPS
+        models = [m for m in data.get("models") or [] if isinstance(m, dict)]
+        name = data.get("default_model") or next((m.get("name") for m in models if m.get("is_loaded")), None)
+        if not name or "turbo" in str(name).lower():
+            return self.TURBO_MAX_STEPS
+        return self.BASE_MAX_STEPS
 
     async def _ensure_dit(self, log_fn: LogFn) -> None:
         """LoRA 를 올리려면 음악 모델이 먼저 올라가 있어야 한다 (ACE 는 첫 생성 때만 자동으로 올림).

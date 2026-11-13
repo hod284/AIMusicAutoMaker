@@ -8,6 +8,7 @@ from typing import Any
 from nicegui import ui
 
 from app.domain.enums import JobKind
+from app.services.music_training_service import TRAIN_FIELD_LABEL, TRAIN_LIMITS
 from app.viewmodels.music_training_vm import STATUS_KO, MusicModelsViewModel, MusicTrainingViewModel
 from app.views.common import ViewScope, folder_picker, page_frame, progress_text, section, status_badge
 from app.views.models_tab import models_tab
@@ -233,15 +234,22 @@ async def music_training_page() -> None:
                     scope.refresh_on(step_status, "job", "job_logs")
 
                     ui.separator()
-                    ui.label("⑤ 학습 설정 (빈칸 = ACE 서버 기본값)").classes("text-sm font-bold")
+                    ui.label("⑤ 학습 설정 (괄호 = 입력 가능 범위, 벗어나면 최저/최고값으로 맞춰짐)").classes("text-sm font-bold")
                     cfg = vm.train_form
+
                     with ui.row().classes("items-end gap-3 w-full"):
-                        lock(ui.number("Epoch", min=1, max=2000).bind_value(cfg, "train_epochs").classes("w-24"))
-                        lock(ui.number("Learning rate", format="%.6f").bind_value(cfg, "learning_rate").classes("w-36"))
-                        lock(ui.number("LoRA rank", min=1).bind_value(cfg, "lora_rank").classes("w-28"))
-                        lock(ui.number("LoRA alpha", min=1).bind_value(cfg, "lora_alpha").classes("w-28"))
-                        lock(ui.number("Batch", min=1).bind_value(cfg, "train_batch_size").classes("w-20"))
-                        lock(ui.number("저장 주기(epoch)", min=1).bind_value(cfg, "save_every_n_epochs").classes("w-32"))
+                        for key, width in (("train_epochs", "w-32"), ("learning_rate", "w-48"),
+                                           ("lora_rank", "w-32"), ("lora_alpha", "w-32"),
+                                           ("train_batch_size", "w-28"), ("save_every_n_epochs", "w-40")):
+                            lo, hi, _ = TRAIN_LIMITS[key]
+                            label = TRAIN_FIELD_LABEL[key]
+                            if key == "learning_rate":
+                                field = ui.number(f"{label} ({lo:g}~{hi:g})", min=lo, max=hi, step=lo,
+                                                  format="%.5f")
+                            else:
+                                field = ui.number(f"{label} ({int(lo)}~{int(hi)})", min=int(lo), max=int(hi),
+                                                  step=1, precision=0)
+                            lock(field.bind_value(cfg, key).classes(width).mark(f"train-{key}"))
                     ui.label("결과는 '결과 저장 폴더/결과 모델 이름' 폴더에 저장되고(이미 있으면 덮어쓰지 않고 중단), "
                      "'모델·카테고리' 탭에 그 이름으로 나타납니다.").classes(
                         "text-xs text-gray-500")
@@ -252,7 +260,7 @@ async def music_training_page() -> None:
 
                     train_button()
                     scope.refresh_on(train_button, "job", "datasets", "dataset_id")
-                    ui.label("첫 실험은 10~20 epoch 로 끝까지 도는지 먼저 확인하세요. loss 가 내려가도 음악 품질은 따로 들어봐야 합니다."
+                    ui.label("ACE 권장: 10~20곡이면 약 800 epoch. loss 가 내려가도 음악 품질은 따로 들어봐야 합니다."
                              ).classes("text-xs text-gray-500")
 
                 # --- ③ 검수 ---

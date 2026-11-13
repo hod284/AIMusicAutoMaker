@@ -59,6 +59,9 @@ class Settings:
     # --- 모델 ---
     qwen_base_model: str = "mlx-community/Qwen3-4B-4bit"
     ace_default_model: str = ""  # 비어 있으면 서버 기본 모델
+    # ACE 5Hz LM (thinking 으로 곡 구성을 짜고, 음악 프롬프트가 비면 음악 설명도 씀).
+    # ACE 는 이 값이 비어 있으면 첫 요청 때 0.6B 를 올리므로 명시한다. 비우면 ACE 기본 동작.
+    ace_lm_model: str = "acestep-5Hz-lm-4B"
 
     # --- 엔진 선택 (어댑터 팩토리) ---
     music_engine: str = "ace"   # ace | mock
@@ -144,6 +147,8 @@ class Settings:
         env = dict(os.environ)
         env["PATH"] = f"{self.ffmpeg8_bin}:{env.get('PATH', '')}"
         env["DYLD_LIBRARY_PATH"] = str(self.ffmpeg8_lib)
+        if self.ace_lm_model:
+            env["ACESTEP_LM_MODEL_PATH"] = self.ace_lm_model
         return env
 
 
@@ -162,6 +167,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "ACE_ROUTE_BINDINGS": ("ace_route_bindings", Path),
     "QWEN_BASE_MODEL": ("qwen_base_model", str),
     "ACE_DEFAULT_MODEL": ("ace_default_model", str),
+    "ACE_LM_MODEL": ("ace_lm_model", str),
     "STUDIO_MUSIC_ENGINE": ("music_engine", str),
     "STUDIO_LYRICS_ENGINE": ("lyrics_engine", str),
     "STUDIO_VOICE_ENGINE": ("voice_engine", str),

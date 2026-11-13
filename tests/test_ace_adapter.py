@@ -183,3 +183,4 @@ async def test_lora_calls_use_long_timeout():
     assert seen["/v1/lora/unload"] == AceRestAdapter.LORA_TIMEOUT_S
     assert seen["/v1/lora/status"] < AceRestAdapter.LORA_TIMEOUT_S
     await ace.aclose()
+

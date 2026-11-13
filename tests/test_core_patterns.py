@@ -135,3 +135,15 @@ def test_atomic_write_never_overwrites(tmp_path):
     atomic_write_text(p, "3", overwrite=True)
     assert p.read_text() == "3"
     assert not [f for f in tmp_path.iterdir() if f.name.endswith(".tmp")]
+
+
+def test_ace_subprocess_env_pins_lm_model(tmp_path):
+    """ACE 를 띄울 때 LM 을 명시한다 (비어 있으면 ACE 가 첫 요청 때 0.6B 를 올림). 비우면 ACE 기본 동작."""
+    from app.core.config import Settings
+
+    env = Settings().ace_subprocess_env()
+    assert env["ACESTEP_LM_MODEL_PATH"] == "acestep-5Hz-lm-4B"
+    s = Settings()
+    s.ace_lm_model = ""
+    assert "ACESTEP_LM_MODEL_PATH" not in s.ace_subprocess_env() or \
+        s.ace_subprocess_env()["ACESTEP_LM_MODEL_PATH"] == __import__("os").environ.get("ACESTEP_LM_MODEL_PATH")

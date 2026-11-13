@@ -315,3 +315,214 @@ def test_lyrics_txt_files_to_dataset(container):
     jsonl = txt_files_to_jsonl(files)
     ds, report = container.lyrics_datasets.build(jsonl)
     assert report.valid == 6 and Path(ds.source_path).is_dir()
+
+
+async def test_music_generation_always_thinking_and_max_steps(container, music, monkeypatch):
+    """음악 생성은 항상 thinking=on, 생성 단계는 음악 모델이 허용하는 최대값 (turbo 20 / 그 밖 200)."""
+    lyrics = "[Verse 1]\n첫 줄\n둘째 줄\n[Chorus]\n후렴"
+    inventory = {"default_model": "acestep-v15-turbo", "models": [{"name": "acestep-v15-turbo", "is_loaded": True}]}
+    real_invoke = music.invoke
+
+    async def fake_invoke(capability, payload=None, **kw):
+        return inventory if capability == "models" else await real_invoke(capability, payload, **kw)
+
+    monkeypatch.setattr(music, "invoke", fake_invoke)
+    await container.music.generate(MusicGenerationSpec(lyrics=lyrics, use_lora=False))
+    sent = music.submitted[-1]
+    assert sent.thinking is True and sent.inference_steps == 20 and sent.lyrics == lyrics
+
+    inventory["default_model"] = "acestep-v15-base"
+    await container.music.generate(MusicGenerationSpec(lyrics=lyrics, use_lora=False))
+    assert music.submitted[-1].inference_steps == 200
+
+    inventory.clear()                                   # 모델 이름을 모르면 안전하게 turbo 기준
+    await container.music.generate(MusicGenerationSpec(lyrics=lyrics, use_lora=False))
+    assert music.submitted[-1].thinking is True and music.submitted[-1].inference_steps == 20
+
+
+def test_music_train_config_limits():
+    """학습 설정은 범위를 넘으면 거부 (화면에서도 막지만 한 번 더)."""
+    from app.services.music_training_service import MusicTrainConfig, train_defaults
+
+    MusicTrainConfig(**train_defaults())                                    # 기본값은 통과
+    with pytest.raises(ValueError, match="Learning rate"):
+        MusicTrainConfig(train_epochs=10, learning_rate=0.03)
+    with pytest.raises(ValueError, match="Rank"):
+        MusicTrainConfig(train_epochs=10, lora_rank=300)
+    with pytest.raises(ValueError, match="저장 주기"):
+        MusicTrainConfig(train_epochs=10, save_every_n_epochs=20)
+
+
+def test_training_status_failure_from_status_text():
+    """ACE 트레이너는 실패를 error 필드가 아니라 status 문구로만 알린다 → 실패로 인식해야 export 로 넘어가지 않는다."""
+    from app.services.music_training_service import summarize_status
+
+    st = summarize_status({"is_training": False, "status": "❌ Training failed: MPS backend out of memory",
+                           "error": None, "current_epoch": 3})
+    assert st.failed and not st.done
+    ok = summarize_status({"is_training": True, "status": "⚠️ Non-finite gradients (1/96); skipping optimizer step"})
+    assert not ok.failed
+
+
+async def test_music_train_reports_ace_failure_instead_of_export(container, music, settings, monkeypatch):
+    """학습이 ACE 안에서 실패하면(메모리 부족 등) export 를 부르지 않고 원인을 그대로 보여 준다."""
+    from app.domain.entities import Dataset
+    from app.domain.enums import DatasetKind
+
+    tensors = settings.workspace_dir / "tensors2"
+    tensors.mkdir(parents=True)
+    (tensors / "a.pt").write_bytes(b"0")
+    ds = Dataset(category_id=None, kind=DatasetKind.MUSIC, version=1, status="preprocessed",
+                 source_path=str(tensors), tensor_path=str(tensors), rights_status="confirmed")
+    container.music_datasets.datasets.add(ds)
+    calls: list[str] = []
+
+    async def fake_invoke(capability, payload=None, **kw):
+        calls.append(capability)
+        if capability == "models":
+            return {"models": [{"name": "acestep-v15-turbo", "is_loaded": True}]}
+        if capability == "training_status":
+            if calls.count("training_status") == 1:
+                return {"is_training": True, "status": "Epoch 1/500"}
+            return {"is_training": False, "status": "❌ Training failed: MPS backend out of memory", "error": None}
+        return {}
+
+    monkeypatch.setattr(music, "invoke", fake_invoke)
+    monkeypatch.setattr(container.jobs._handlers[JobKind.MUSIC_TRAIN], "poll_s", 0.01)
+    job = container.jobs.submit(JobKind.MUSIC_TRAIN, {"dataset_id": ds.id, "config": {
+        "train_epochs": 500, "save_every_n_epochs": 50, "model_name": "oom"}})
+    done = await container.jobs.wait(job.id, timeout=10)
+    assert done.status == JobStatus.FAILED and "메모리 부족" in done.error
+    assert "training_export" not in calls
+
+
+class _FakeRestarter:
+    enabled = True
+
+    def __init__(self, fail: bool = False) -> None:
+        self.calls = 0
+        self.fail = fail
+
+    async def restart(self) -> None:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("포트 확인 실패")
+
+
+def _preprocessed_dataset(container, settings, name):
+    from app.domain.entities import Dataset
+    from app.domain.enums import DatasetKind
+
+    tensors = settings.workspace_dir / name
+    tensors.mkdir(parents=True)
+    (tensors / "a.pt").write_bytes(b"0")
+    ds = Dataset(category_id=None, kind=DatasetKind.MUSIC, version=1, status="preprocessed",
+                 source_path=str(tensors), tensor_path=str(tensors), rights_status="confirmed")
+    container.music_datasets.datasets.add(ds)
+    return ds
+
+
+@pytest.mark.parametrize("outcome", ["success", "ace_failure"])
+async def test_music_train_restarts_engine_after_training(container, music, settings, monkeypatch, outcome):
+    """학습이 끝나면(성공·실패 모두) 음악 엔진을 다시 시작해 학습이 잡아 둔 메모리를 비운다. export 뒤에 재시작."""
+    ds = _preprocessed_dataset(container, settings, f"t_{outcome}")
+    calls: list[str] = []
+
+    async def fake_invoke(capability, payload=None, **kw):
+        calls.append(capability)
+        if capability == "models":
+            return {"models": [{"name": "acestep-v15-turbo", "is_loaded": True}]}
+        if capability == "training_status":
+            if calls.count("training_status") == 1:
+                return {"is_training": True, "current_epoch": 1}
+            if outcome == "ace_failure":
+                return {"is_training": False, "status": "❌ Training failed: boom"}
+            return {"is_training": False, "current_epoch": 10, "current_loss": 0.2}
+        if capability == "training_export":
+            out = Path(payload["export_path"])
+            out.mkdir(parents=True)
+            (out / "adapter_config.json").write_text("{}")
+            (out / "adapter_model.safetensors").write_bytes(b"\x00" * 8)
+        return {}
+
+    handler = container.jobs._handlers[JobKind.MUSIC_TRAIN]
+    restarter = _FakeRestarter()
+    monkeypatch.setattr(music, "invoke", fake_invoke)
+    monkeypatch.setattr(handler, "poll_s", 0.01)
+    monkeypatch.setattr(handler, "engine_restarter", restarter)
+    restarted_after: list[list[str]] = []
+    real_restart = restarter.restart
+
+    async def spy():
+        restarted_after.append(list(calls))
+        await real_restart()
+
+    monkeypatch.setattr(restarter, "restart", spy)
+    container.music_datasets.server_dataset_id = ds.id
+    done = await container.jobs.wait(container.jobs.submit(JobKind.MUSIC_TRAIN, {"dataset_id": ds.id, "config": {
+        "train_epochs": 10, "model_name": f"m_{outcome}"}}).id, timeout=10)
+    assert restarter.calls == 1
+    assert container.music_datasets.server_dataset_id is None          # 새 ACE 에는 데이터셋이 없음
+    if outcome == "success":
+        assert done.status == JobStatus.SUCCEEDED, done.error
+        assert restarted_after[0][-1] == "training_export"            # export 를 끝낸 뒤에 재시작
+    else:
+        assert done.status == JobStatus.FAILED and "training_export" not in calls
+
+
+async def test_music_train_engine_restart_failure_keeps_trained_model(container, music, settings, monkeypatch):
+    """재시작이 실패해도 학습 결과(모델 등록)는 그대로 성공 — 직접 다시 켜라는 안내만 남긴다."""
+    ds = _preprocessed_dataset(container, settings, "t_restart_fail")
+    calls: list[str] = []
+
+    async def fake_invoke(capability, payload=None, **kw):
+        calls.append(capability)
+        if capability == "models":
+            return {"models": [{"name": "acestep-v15-turbo", "is_loaded": True}]}
+        if capability == "training_status":
+            running = calls.count("training_status") == 1
+            return {"is_training": running, "current_epoch": 1 if running else 10}
+        if capability == "training_export":
+            out = Path(payload["export_path"])
+            out.mkdir(parents=True)
+            (out / "adapter_config.json").write_text("{}")
+            (out / "adapter_model.safetensors").write_bytes(b"\x00" * 8)
+        return {}
+
+    handler = container.jobs._handlers[JobKind.MUSIC_TRAIN]
+    monkeypatch.setattr(music, "invoke", fake_invoke)
+    monkeypatch.setattr(handler, "poll_s", 0.01)
+    monkeypatch.setattr(handler, "engine_restarter", _FakeRestarter(fail=True))
+    done = await container.jobs.wait(container.jobs.submit(JobKind.MUSIC_TRAIN, {"dataset_id": ds.id, "config": {
+        "train_epochs": 10, "model_name": "m_restart_fail"}}).id, timeout=10)
+    assert done.status == JobStatus.SUCCEEDED, done.error
+    events = [e.message for e in container.job_repo.events(done.id)] if hasattr(container.job_repo, "events") else []
+    if events:
+        assert any("자동 재시작 실패" in m for m in events)
+
+
+def test_ace_process_manager_only_for_local_real_engine(settings):
+    from app.services.ace_process import AceProcessManager
+
+    settings.music_engine = "mock"
+    assert AceProcessManager(settings).enabled is False
+    settings.music_engine = "ace"
+    settings.ace_base_url = "http://192.168.0.10:8001"
+    assert AceProcessManager(settings).enabled is False                # 다른 컴퓨터의 ACE 는 끄지 않는다
+
+
+def test_ace_process_restart_waits_until_healthy(settings, monkeypatch):
+    from app.services.ace_process import AceProcessManager
+
+    m = AceProcessManager(settings)
+    order: list[str] = []
+    health = iter([False, False, True])
+    monkeypatch.setattr(m, "_stop", lambda: order.append("stop"))
+    monkeypatch.setattr(m, "_start", lambda: order.append("start"))
+    monkeypatch.setattr(m, "_healthy", lambda: next(health))
+    m.restart_blocking(health_timeout_s=60, sleep=lambda s: order.append("wait"))
+    assert order == ["stop", "start", "wait", "wait"]
+
+    monkeypatch.setattr(m, "_healthy", lambda: False)
+    with pytest.raises(RuntimeError, match="다시 켜지지"):
+        m.restart_blocking(health_timeout_s=0, sleep=lambda s: None)

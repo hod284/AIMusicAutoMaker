@@ -12,6 +12,7 @@ import logging
 from app.adapters.factory import AdapterFactory
 from app.adapters.ports import LyricsEnginePort, MusicEnginePort, VoiceEnginePort
 from app.core.config import Settings, get_settings
+from app.services.ace_process import AceProcessManager
 from app.core.observer import EventBus, Topics
 from app.core.singleton import SingletonMeta
 from app.db.database import Database
@@ -107,7 +108,7 @@ class ServiceContainer(metaclass=SingletonMeta):
             MusicScanHandler(self.music_datasets),
             MusicLabelHandler(self.music_datasets),
             MusicPreprocessHandler(self.music_datasets),
-            MusicTrainHandler(self.music_datasets, self.music),
+            MusicTrainHandler(self.music_datasets, self.music, engine_restarter=AceProcessManager(s)),
             VoiceTrainHandler(self.voice),
             VoiceConvertHandler(self.voice),
         ):

@@ -82,14 +82,55 @@ def detect_language(text: str) -> str:
     return "en" if latin else "ko"
 
 
+_BOMS: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xfe\x00\x00", "utf-32-le"),   # UTF-32 BOM 이 UTF-16 LE BOM 으로 시작하므로 먼저 검사
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+
+
+def _guess_utf16_without_bom(data: bytes) -> str | None:
+    """BOM 없는 UTF-16 추정: 짝수/홀수 위치 한쪽에 0 바이트가 몰려 있으면 UTF-16 으로 본다.
+
+    영문·숫자·줄바꿈·[Verse] 표시처럼 ASCII 글자는 UTF-16 에서 한 바이트가 0 이 된다.
+    UTF-8 / CP949 텍스트에는 0 바이트가 사실상 나오지 않는다.
+    """
+    if len(data) < 4 or len(data) % 2:
+        return None
+    even_zero = data[0::2].count(0)
+    odd_zero = data[1::2].count(0)
+    # 한글만 있는 줄이어도 줄바꿈(\n)마다 0 바이트가 하나씩 생기므로 개수 대신 '한쪽 쏠림'으로 판단
+    if odd_zero >= 2 and odd_zero > even_zero * 4:
+        return "utf-16-le"
+    if even_zero >= 2 and even_zero > odd_zero * 4:
+        return "utf-16-be"
+    return None
+
+
 def decode_text(data: bytes) -> str:
-    """UTF-8 → (실패 시) 윈도우 한글 CP949 순서로 읽는다."""
-    for enc in ("utf-8-sig", "cp949"):
+    """가사 .txt 를 읽는다. 순서: BOM(UTF-8/16/32) → BOM 없는 UTF-16 → UTF-8 → 윈도우 한글 CP949."""
+    candidates: list[str] = []
+    for bom, enc in _BOMS:
+        if data.startswith(bom):
+            candidates.append(enc)
+            break
+    else:
+        guessed = _guess_utf16_without_bom(data)
+        if guessed:
+            candidates.append(guessed)
+        candidates += ["utf-8", "cp949"]
+    for enc in candidates:
         try:
-            return data.decode(enc)
+            text = data.decode(enc)
         except UnicodeDecodeError:
             continue
-    raise ValidationError("텍스트 인코딩을 읽을 수 없습니다. UTF-8 로 저장해 주세요.")
+        text = text.lstrip("\ufeff")
+        if "\x00" in text:            # 잘못된 인코딩으로 읽힌 흔적 → 다음 후보
+            continue
+        return text
+    raise ValidationError("텍스트 인코딩을 읽을 수 없습니다. UTF-8 / UTF-16 / CP949(ANSI) 로 저장해 주세요.")
 
 
 def txt_to_record(filename: str, text: str) -> dict[str, Any]:

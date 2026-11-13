@@ -10,7 +10,7 @@ from app.adapters.ports import CapabilityReport
 from app.core.observer import ObservableProperty, Topics
 from app.domain.entities import Category, Dataset, Job, ModelRecord
 from app.domain.enums import Engine, JobKind, JobStatus
-from app.services.music_training_service import MusicTrainConfig
+from app.services.music_training_service import MusicTrainConfig, train_defaults
 from app.viewmodels.base import BaseViewModel, JobTracker
 from app.viewmodels.models_vm import MusicModelsViewModel  # noqa: F401  (화면에서 같이 import)
 
@@ -52,8 +52,7 @@ class MusicTrainingViewModel(BaseViewModel):
         # 화면 입력값 (단계 실행 때 작업 기록에 같이 남겨, 다시 들어오면 그대로 되살린다)
         self.scan_opts: dict[str, Any] = {"tag": "", "instrumental": False}
         self.label_opts: dict[str, Any] = {"transcribe_lyrics": False, "format_lyrics": False, "only_unlabeled": False}
-        self.train_form: dict[str, Any] = {"train_epochs": 10, "learning_rate": None, "lora_rank": None,
-                                           "lora_alpha": None, "train_batch_size": 1, "save_every_n_epochs": 5}
+        self.train_form: dict[str, Any] = train_defaults()   # 빈칸 없이 기본값으로 채움
         self.tracker = JobTracker(self, self._on_job, self._on_log)
         self._reload_staged()
         self._reload_datasets(select_latest=True)
@@ -205,13 +204,18 @@ class MusicTrainingViewModel(BaseViewModel):
 
         def _num(v: Any, cast: type) -> Any:
             return cast(v) if v not in (None, "") else None
+        defaults = train_defaults()
+
+        def _val(key: str, cast: type) -> Any:          # 칸을 비워 두면 기본값
+            v = _num(form.get(key), cast)
+            return defaults[key] if v is None else v
         config = {
-            "train_epochs": _num(form.get("train_epochs"), int) or 10,
-            "learning_rate": _num(form.get("learning_rate"), float),
-            "lora_rank": _num(form.get("lora_rank"), int),
-            "lora_alpha": _num(form.get("lora_alpha"), int),
-            "train_batch_size": _num(form.get("train_batch_size"), int),
-            "save_every_n_epochs": _num(form.get("save_every_n_epochs"), int),
+            "train_epochs": _val("train_epochs", int) or defaults["train_epochs"],
+            "learning_rate": _val("learning_rate", float),
+            "lora_rank": _val("lora_rank", int),
+            "lora_alpha": _val("lora_alpha", int),
+            "train_batch_size": _val("train_batch_size", int),
+            "save_every_n_epochs": _val("save_every_n_epochs", int),
             "model_name": (self.model_title or "").strip(),
             "export_dir": (self.export_dir or "").strip(),
         }

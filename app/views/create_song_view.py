@@ -1,6 +1,6 @@
 """곡 만들기 화면.
 
-① 가사 선택 (가사집에서 고르기만 — 쓰기·고치기는 가사집)  →  ② 음악 프롬프트 (선택)
+① 가사 선택 (가사집에서 고르기만 — 쓰기·고치기는 가사집)  →  ② 음악 설명 (선택, 비우면 ACE LM 이 씀)
 →  ③ 음악 생성: 음악 모델·노래 언어·저장 폴더 → ACE-Step 으로 생성
 """
 
@@ -119,15 +119,10 @@ def create_song_page(lyric: str | None = None) -> None:   # ?lyric=<가사집 �
                 chosen()
                 scope.refresh_on(chosen, "draft_id", "title", "lyrics_text", "job")
 
-                # --- ② 음악 프롬프트 (선택) ---
-                with section("② 음악 프롬프트 (선택)",
-                             "비워 두면 프롬프트 없이 가사와 음악 모델만으로 만듭니다. 원하면 AI 로 만들거나 직접 쓰세요."):
-                    with ui.row().classes("w-full items-end gap-2 no-wrap"):
-                        lock(ui.input("희망 요소", placeholder="스트링 섹션, 후반 고조").bind_value(vm, "wishes")
-                             .classes("flex-1"))
-                        lock(ui.button("AI 프롬프트 생성", icon="auto_awesome",
-                                       on_click=lambda: vm.generate_prompt()).props("outline")
-                             .mark("gen-prompt"))
+                # --- ② 음악 설명 (선택) — 비우면 ACE 의 LM 이 가사를 보고 직접 쓴다 ---
+                with section("② 음악 설명 (선택)",
+                             "비워 두면 ACE 가 가사를 보고 장르·악기·분위기를 직접 정합니다. "
+                             "원하는 스타일이 분명할 때만 영어로 쓰세요."):
                     lock(ui.textarea("음악 프롬프트 (영어 권장)", placeholder="예: emotional korean ballad, piano, strings")
                          .bind_value(vm, "prompt_text").classes("w-full"))
                     lock(ui.number("BPM (선택)", min=30, max=300).bind_value(vm, "bpm").classes("w-32"))

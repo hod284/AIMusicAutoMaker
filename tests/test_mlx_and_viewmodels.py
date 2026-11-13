@@ -257,3 +257,15 @@ async def test_lyrics_training_locks_restores_and_unlocks(container, tmp_path, l
     assert again.job.status == JobStatus.SUCCEEDED, again.error
     assert not again.locked
     again.dispose()
+
+
+
+
+def test_music_training_form_has_defaults(container):
+    """학습 설정 칸은 빈칸 없이 ACE LoRA 기본값으로 채워진다."""
+    from app.viewmodels.music_training_vm import MusicTrainingViewModel
+
+    vm = MusicTrainingViewModel(container)
+    assert vm.train_form == {"train_epochs": 10, "learning_rate": 0.0001, "lora_rank": 64, "lora_alpha": 128,
+                             "train_batch_size": 1, "save_every_n_epochs": 5}
+    vm.dispose()

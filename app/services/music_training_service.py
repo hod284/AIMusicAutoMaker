@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.adapters.ports import MusicEnginePort
 from app.core.errors import CapabilityUnsupportedError, EngineResponseError, ValidationError
@@ -128,7 +128,8 @@ def summarize_status(data: Any) -> StatusSummary:
         if cur is not None and tot:
             summary.progress = max(0.0, min(cur / tot, 1.0))
             summary.current, summary.total = int(cur), int(tot)
-    summary.failed = state in _FAILED or bool(error)
+    # ACE 트레이너는 예외를 잡아 status 문구("❌ Training failed: ...")로만 알린다 (error 필드는 비어 있음)
+    summary.failed = state in _FAILED or bool(error) or "❌" in state or "training failed" in state
     summary.done = (state in _DONE) or (progress is not None and progress >= 1.0 and not summary.failed)
     if summary.progress is None and summary.epoch is not None and summary.total_epochs:
         summary.progress = min(summary.epoch / summary.total_epochs, 1.0)
@@ -174,8 +175,26 @@ def find_adapter_dir(root: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 # 데이터셋 관리
 # ---------------------------------------------------------------------------
+# LoRA 학습 설정 (최저, 최고, 기본값). 기본값은 ACE LoRA 학습 API 기본값과 같다.
+# - rank 1~256, alpha 1~512: ACE 서버가 받는 범위 그대로
+# - learning rate: ACE 는 상한이 없어 앱에서 막는다 (기본 1e-4 의 0.1~10배)
+TRAIN_LIMITS: dict[str, tuple[float, float, float]] = {
+    "train_epochs": (1, 2000, 10), "learning_rate": (0.00001, 0.001, 0.0001),
+    "lora_rank": (1, 256, 64), "lora_alpha": (1, 512, 128),
+    "train_batch_size": (1, 16, 1), "save_every_n_epochs": (1, 2000, 5),
+}
+TRAIN_FIELD_LABEL: dict[str, str] = {"train_epochs": "Epoch", "learning_rate": "Learning rate",
+                                     "lora_rank": "Rank", "lora_alpha": "Alpha", "train_batch_size": "Batch",
+                                     "save_every_n_epochs": "저장 주기(epoch)"}
+
+
+def train_defaults() -> dict[str, Any]:
+    """학습 화면에 채울 기본값 (정수 칸은 int)."""
+    return {k: (v[2] if k == "learning_rate" else int(v[2])) for k, v in TRAIN_LIMITS.items()}
+
+
 class MusicTrainConfig(BaseModel):
-    """학습 설정. None 이면 ACE 서버 기본값 사용. 1000 epoch 같은 긴 기본값 금지 → 10."""
+    """LoRA 학습 설정. None 이면 ACE 서버 기본값 사용."""
 
     train_epochs: int = Field(default=10, ge=1, le=2000)
     learning_rate: float | None = Field(default=None, gt=0)
@@ -188,6 +207,18 @@ class MusicTrainConfig(BaseModel):
     base_model: str = "acestep-v15-turbo"
     model_name: str = Field(default="", max_length=80)   # 결과 모델 이름 (사용자 지정)
     export_dir: str = ""                                  # 결과 저장 폴더 (비우면 기본 위치)
+
+    @model_validator(mode="after")
+    def _check_limits(self) -> "MusicTrainConfig":
+        """화면에서 막지만, 다른 경로로 들어온 값도 범위를 넘지 않게 한 번 더 검사한다."""
+        for key, (lo, hi, _) in TRAIN_LIMITS.items():
+            value = getattr(self, key)
+            if value is not None and not lo <= value <= hi:
+                raise ValueError(f"{TRAIN_FIELD_LABEL[key]} 는 {lo:g}~{hi:g} "
+                                 f"사이여야 합니다 (입력값 {value:g}).")
+        if self.save_every_n_epochs is not None and self.save_every_n_epochs > self.train_epochs:
+            raise ValueError(f"저장 주기({self.save_every_n_epochs})가 Epoch({self.train_epochs})보다 큽니다.")
+        return self
 
 
 class MusicDatasetService:
@@ -559,10 +590,32 @@ class MusicTrainHandler(_MusicStepHandler):
 
     MAX_STATUS_ERRORS = 60   # 5초 간격 × 60 = 약 5분 동안 계속 실패하면 발산으로 보고 멈춘다
 
-    def __init__(self, svc: MusicDatasetService, music: MusicService, poll_s: float = 5.0) -> None:
+    def __init__(self, svc: MusicDatasetService, music: MusicService, poll_s: float = 5.0,
+                 engine_restarter: Any = None) -> None:
         super().__init__(svc)
         self.music = music
         self.poll_s = poll_s
+        # 학습이 끝나면 음악 엔진(ACE)을 다시 시작한다 — ACE 는 학습이 잡아 둔 메모리를 비우지 않아
+        # 그대로 곡을 만들면 맥에서 메모리 부족이 난다 (app/services/ace_process.py)
+        self.engine_restarter = engine_restarter
+
+    async def _restart_engine(self, ctx: JobContext) -> None:
+        r = self.engine_restarter
+        if r is None or not getattr(r, "enabled", False):
+            return
+        ctx.log("학습이 끝나 음악 엔진(ACE)을 다시 시작합니다 — 학습이 잡아 둔 메모리를 비우기 위해서 (1~2분)")
+        try:
+            await r.restart()
+            ctx.log("음악 엔진 다시 시작 완료 — 바로 곡을 만들 수 있습니다.")
+        except Exception as exc:  # noqa: BLE001 - 학습 결과는 이미 저장됨. 재시작 실패만 알린다
+            log.exception("ACE 자동 재시작 실패")
+            ctx.log(f"음악 엔진 자동 재시작 실패: {exc} — 곡을 만들기 전에 터미널에서 "
+                    "'launch_studio.py --restart-ace' 로 직접 다시 켜세요.", "warning")
+        finally:
+            # 새 ACE 프로세스에는 모델·데이터셋·LoRA 가 올라가 있지 않다
+            self.svc._dit_ready = self.svc._llm_ready = False
+            self.svc.server_dataset_id = None
+            self.music.invalidate_lora_state()
 
     def describe(self, params: dict[str, Any]) -> str:
         return "ACE 음악 LoRA 학습"
@@ -600,66 +653,74 @@ class MusicTrainHandler(_MusicStepHandler):
             self.music.invalidate_lora_state()
             ctx.log(f"학습 시작: epochs={cfg.train_epochs}, 출력={output_dir}")
             await self.svc.invoke_ready(ctx, "training_start", payload)
-            seen_running = False
-            status_errors = 0
             try:
-                while True:
-                    ctx.check_cancelled()
-                    try:
-                        raw_status = await self.svc.engine.invoke("training_status")
-                    except Exception as exc:  # noqa: BLE001
-                        # ACE 서버는 loss 가 NaN 이면 상태 JSON 을 못 만들어 500 을 돌려준다
-                        # (ValueError: Out of range float values are not JSON compliant: nan).
-                        # 한두 번은 학습 초반/순간적인 값일 수 있으므로 바로 멈추지 않고 계속 확인한다.
-                        status_errors += 1
-                        if status_errors == 1 or status_errors % 6 == 0:
-                            ctx.log(f"ACE 학습 상태 응답 오류 {status_errors}회 (loss 가 NaN 일 때 생김). "
-                                    f"학습은 멈추지 않고 계속 확인합니다.", "warning")
-                        if status_errors >= self.MAX_STATUS_ERRORS:
-                            raise EngineResponseError(
-                                "ACE 학습 상태를 계속 읽을 수 없습니다. loss 가 NaN 으로 발산했을 가능성이 큽니다 — "
-                                "learning rate 를 낮추거나(예: 1e-4 → 5e-5) 데이터를 확인한 뒤 다시 학습하세요.",
-                                detail=str(exc)[:500]) from exc
-                        await asyncio.sleep(self.poll_s)
-                        continue
-                    if status_errors:
-                        ctx.log(f"ACE 학습 상태 응답 복구 (오류 {status_errors}회 후)")
-                        status_errors = 0
-                    st = summarize_status(raw_status)
-                    if st.running:
-                        seen_running = True
-                    if st.progress is not None:
-                        ctx.progress(st.progress)
-                    else:
-                        ctx.heartbeat()
-                    if st.loss is not None:
-                        x = st.step if st.step is not None else (st.epoch or len(losses))
-                        if not losses or losses[-1] != (x, st.loss):
-                            losses.append((x, st.loss))
-                            ctx.log(f"epoch {st.epoch}/{st.total_epochs or cfg.train_epochs} "
-                                    f"step {st.step} loss {st.loss:.4f}")
-                    if "non-finite" in (st.message + st.error).lower():
-                        nonfinite += 1
-                        ctx.log(f"Non-finite gradients 경고 ({nonfinite}회) — 반복되면 학습률을 낮추세요.", "warning")
-                    if st.failed:
-                        raise EngineResponseError("ACE 학습 실패", detail=st.error or st.raw)
-                    if st.done or (seen_running and st.running is False):
-                        ctx.log("학습 종료", details={"raw": st.raw})
-                        break
-                    await asyncio.sleep(self.poll_s)
-            except (asyncio.CancelledError, Exception):
-                ctx.log("학습 중지 요청 → ACE 서버에 stop 전송", "warning")
+                seen_running = False
+                status_errors = 0
                 try:
-                    await self.svc.engine.invoke("training_stop")
-                except Exception:  # noqa: BLE001
-                    log.exception("training_stop 실패")
-                raise
+                    while True:
+                        ctx.check_cancelled()
+                        try:
+                            raw_status = await self.svc.engine.invoke("training_status")
+                        except Exception as exc:  # noqa: BLE001
+                            # ACE 서버는 loss 가 NaN 이면 상태 JSON 을 못 만들어 500 을 돌려준다
+                            # (ValueError: Out of range float values are not JSON compliant: nan).
+                            # 한두 번은 학습 초반/순간적인 값일 수 있으므로 바로 멈추지 않고 계속 확인한다.
+                            status_errors += 1
+                            if status_errors == 1 or status_errors % 6 == 0:
+                                ctx.log(f"ACE 학습 상태 응답 오류 {status_errors}회 (loss 가 NaN 일 때 생김). "
+                                        f"학습은 멈추지 않고 계속 확인합니다.", "warning")
+                            if status_errors >= self.MAX_STATUS_ERRORS:
+                                raise EngineResponseError(
+                                    "ACE 학습 상태를 계속 읽을 수 없습니다. loss 가 NaN 으로 발산했을 가능성이 큽니다 — "
+                                    "learning rate 를 낮추거나(예: 1e-4 → 5e-5) 데이터를 확인한 뒤 다시 학습하세요.",
+                                    detail=str(exc)[:500]) from exc
+                            await asyncio.sleep(self.poll_s)
+                            continue
+                        if status_errors:
+                            ctx.log(f"ACE 학습 상태 응답 복구 (오류 {status_errors}회 후)")
+                            status_errors = 0
+                        st = summarize_status(raw_status)
+                        if st.running:
+                            seen_running = True
+                        if st.progress is not None:
+                            ctx.progress(st.progress)
+                        else:
+                            ctx.heartbeat()
+                        if st.loss is not None:
+                            x = st.step if st.step is not None else (st.epoch or len(losses))
+                            if not losses or losses[-1] != (x, st.loss):
+                                losses.append((x, st.loss))
+                                ctx.log(f"epoch {st.epoch}/{st.total_epochs or cfg.train_epochs} "
+                                        f"step {st.step} loss {st.loss:.4f}")
+                        if "non-finite" in (st.message + st.error).lower():
+                            nonfinite += 1
+                            ctx.log(f"Non-finite gradients 경고 ({nonfinite}회) — 반복되면 학습률을 낮추세요.", "warning")
+                        if st.failed:
+                            reason = st.error or st.state
+                            if "out of memory" in reason.lower():
+                                raise EngineResponseError(
+                                    "ACE 학습 실패: 맥 GPU 메모리 부족. 음악 엔진을 다시 시작한 뒤(--restart-ace) "
+                                    "다른 작업 없이 바로 학습하거나, Rank/Dim·Batch 를 낮춰 보세요.", detail=reason[:800])
+                            raise EngineResponseError("ACE 학습 실패", detail=reason[:800] or st.raw)
+                        if st.done or (seen_running and st.running is False):
+                            ctx.log("학습 종료", details={"raw": st.raw})
+                            break
+                        await asyncio.sleep(self.poll_s)
+                except (asyncio.CancelledError, Exception):
+                    ctx.log("학습 중지 요청 → ACE 서버에 stop 전송", "warning")
+                    try:
+                        await self.svc.engine.invoke("training_stop")
+                    except Exception:  # noqa: BLE001
+                        log.exception("training_stop 실패")
+                    raise
 
-            ctx.set_status(JobStatus.EXPORTING)
-            ctx.log(f"Export → {export_dir}")
-            await self.svc.engine.invoke("training_export", {
-                "export_path": str(export_dir), "lora_output_dir": str(output_dir),
-            })
+                ctx.set_status(JobStatus.EXPORTING)
+                ctx.log(f"Export → {export_dir}")
+                await self.svc.engine.invoke("training_export", {
+                    "export_path": str(export_dir), "lora_output_dir": str(output_dir),
+                })
+            finally:
+                await self._restart_engine(ctx)
 
         ctx.set_status(JobStatus.VALIDATING_ADAPTER)
         adapter = find_adapter_dir(export_dir) or find_adapter_dir(output_dir)
